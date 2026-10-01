@@ -1,0 +1,79 @@
+name: Validate Transmission Lab
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transmission-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CI: 'true'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.19.0'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Prepare Chromium
+        run: npx --no-install playwright install chromium
+      - name: Verify model and geometry
+        run: npm test
+      - name: Build web bundle
+        run: npm run build
+      - name: Verify browser interaction
+        run: npm run test:browser
+      - name: Verify captured experiments and consumer controls
+        run: npm run test:consumer
+      - name: Verify readable anatomy and graphics recovery
+        run: npm run test:scene-product
+      - name: Verify source desktop app
+        run: npm run test:desktop
+      - name: Package Windows installer
+        run: npm run package:desktop
+      - name: Verify independent desktop executable
+        run: |
+          $env:TRANSMISSION_DESKTOP_EXE = Join-Path $env:GITHUB_WORKSPACE 'release/windows/win-unpacked/Transmission Lab.exe'
+          node tests/desktop.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify installer checksum and notices
+        run: |
+          $taskVersion = (Get-Content -Raw -LiteralPath 'package.json' | ConvertFrom-Json).version
+          $taskInstaller = "release/windows/Transmission-Lab-Setup-$taskVersion.exe"
+          $taskExpectedHash = (Get-Content -Raw -LiteralPath "$taskInstaller.sha256").Trim().Split(' ')[0]
+          $taskActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $taskInstaller).Hash
+          if ($taskActualHash -ne $taskExpectedHash) { throw 'Installer checksum mismatch' }
+          foreach ($taskNotice in @('LICENSE.electron.txt', 'LICENSES.chromium.html', 'resources/THREE-LICENSE.txt', 'resources/docs/THIRD-PARTY-NOTICES.md', 'resources/docs/consumer-release.md')) {
+            if (-not (Test-Path -LiteralPath (Join-Path 'release/windows/win-unpacked' $taskNotice))) { throw "Missing notice: $taskNotice" }
+          }
+      - name: Retain tested installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: transmission-lab-windows-${{ github.sha }}
+          path: |
+            release/windows/Transmission-Lab-Setup-*.exe
+            release/windows/Transmission-Lab-Setup-*.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

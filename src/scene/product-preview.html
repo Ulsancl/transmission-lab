@@ -1,0 +1,11 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><title>Scene product verification</title>
+<style>body{margin:0;background:#0c1117;font-family:system-ui;color:#d9e2ea}#view{position:relative;width:748px;height:330px}.scene-part-label{box-sizing:border-box}#results{font-size:12px}</style>
+<div id="view"></div><pre id="results"></pre>
+<script type="module">
+import {createTransmissionScene} from '../scene.js';
+import {createSimulator,defaultSettings} from '../model.js';
+let simulator=createSimulator(defaultSettings('dct'));
+const scene=createTransmissionScene(document.querySelector('#view'),{onSelectPart:id=>{qa.view.selectedPart=id;scene.selectPart(id);qa.draw();}});
+window.qa={scene,view:{quality:'balanced',explode:.06,housing:1,housingMode:'cutaway',cutaway:.55,labels:true,flow:true,bearings:true,clutches:true,lubrication:true,oilFlow:true,speed:1/60,selectedPart:null},get sim(){return simulator},type(type){simulator=createSimulator(defaultSettings(type));scene.setType(type);qa.view.selectedPart=null;qa.draw();},draw(dt=0){scene.update(simulator.snapshot(),qa.view,dt);return scene.getDiagnostics();}};
+qa.type('dct');
+</script></html>
