@@ -26,7 +26,7 @@ await run(process.execPath, [path.join(path.dirname(require.resolve('vite/packag
 if (mode === 'start') await run(require('electron'), [root]);
 else if (mode === 'package') {
   const runtime = path.join(electronPackage, 'dist');
-  await run(process.execPath, [path.join(path.dirname(require.resolve('electron-builder/package.json')), 'cli.js'), '--win', 'nsis', '--x64', '--config', 'electron-builder.json', `--config.electronDist=${runtime}`]);
+  await run(process.execPath, [path.join(path.dirname(require.resolve('electron-builder/package.json')), 'cli.js'), '--win', 'nsis', '--x64', '--publish', 'never', '--config', 'electron-builder.json', `--config.electronDist=${runtime}`]);
   const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const file = path.join(root, 'release', 'windows', `Transmission-Lab-Setup-${version}.exe`);
   fs.writeFileSync(file + '.sha256', `${createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  ${path.basename(file)}\n`);
