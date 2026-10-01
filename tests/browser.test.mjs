@@ -15,8 +15,9 @@ if(!process.env.TRANSMISSION_TEST_URL){
 const version=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8')).version;
 const output=path.resolve(`output/qa-v${version}`);await fs.mkdir(output,{recursive:true});
 const browser=await chromium.launch({headless:true});
-const context=await browser.newContext({viewport:{width:1600,height:1100},deviceScaleFactor:1,acceptDownloads:true});
+const context=await browser.newContext({viewport:process.env.CI==='true'?{width:1366,height:768}:{width:1600,height:1100},deviceScaleFactor:1,acceptDownloads:true});
 const page=await context.newPage(),errors=[];
+page.setDefaultTimeout(90000);
 page.on('pageerror',e=>errors.push(e.message));
 page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
 const results=[];
@@ -24,6 +25,12 @@ async function check(name,action){await action();results.push({name,passed:true}
 try {
  await page.goto(url);await page.waitForFunction(()=>window.transmissionLab?.getState().scene?.meshCount>0,{timeout:30000});
  await page.evaluate(()=>window.transmissionLab.pause());
+ if(process.env.CI==='true'){
+  // Hosted runners have software rendering. Exercise the consumer quality
+  // control here; scene-product.test separately checks all quality levels.
+  await page.locator('#quality').selectOption('low');
+  await page.waitForFunction(()=>window.transmissionLab.getState().scene.effectiveQuality==='low');
+ }
  await check('All five types render their own geometry and change operating values',async()=>{
   const geometries=[];
   for(const type of ['mt','dct','cvt','at','ecvt']){

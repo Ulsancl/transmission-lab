@@ -12,7 +12,7 @@ let browser;const checks=[],records=[],errors=[];
 const check=async(name,fn)=>{await fn();checks.push(name);console.log('PASS '+name);};
 try{
  server=await createServer({root,server:{host:'127.0.0.1',port:5198,strictPort:true}});await server.listen();
- browser=await chromium.launch({headless:true,args:['--use-angle=swiftshader','--enable-webgl']});const page=await browser.newPage({viewport:{width:1366,height:768},deviceScaleFactor:1});page.on('pageerror',e=>errors.push(e.message));
+ browser=await chromium.launch({headless:true,args:['--use-angle=swiftshader','--enable-webgl']});const page=await browser.newPage({viewport:{width:1366,height:768},deviceScaleFactor:1});page.setDefaultTimeout(90000);page.on('pageerror',e=>errors.push(e.message));
  await page.goto('http://127.0.0.1:5198/src/scene/product-preview.html');await page.waitForFunction(()=>window.qa?.scene);
  await check('Quality levels preserve gear tooth count, radii, bores and helix while reducing sampled surface triangles',()=>{
   const mats=[new THREE.MeshStandardMaterial(),new THREE.MeshStandardMaterial(),new THREE.MeshStandardMaterial()],rows=[];

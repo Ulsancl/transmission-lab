@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron } from 'playwright';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -23,6 +24,7 @@ async function check(name, action) { await action(); checks.push(name); console.
 async function launch() {
   app = await electron.launch({ executablePath, args: process.env.TRANSMISSION_DESKTOP_EXE ? [] : [root], env, timeout: 45000 });
   page = await app.firstWindow();
+  page.setDefaultTimeout(90000);
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('request', r => { if (/^https?:/.test(r.url())) remoteRequests.push(r.url()); });
@@ -188,11 +190,24 @@ try {
     assert.deepEqual((await state()).settings, before);
   });
   await check('real menus, Space and Ctrl+Shift+P each perform one pause action', async () => {
+    // Freeze RAF timestamps during asynchronous native input. This tests the
+    // actual menu/accelerator handlers without a software-renderer stall
+    // independently changing their toggle direction.
+    const clockTime=new Date('2026-10-01T08:00:00Z');
+    await page.clock.install({time:clockTime});
+    await page.clock.pauseAt(new Date(clockTime.getTime()+1000));
+    const waitPaused=async expected=>{
+      const deadline=Date.now()+15000;
+      while(Date.now()<deadline){if((await state()).paused===expected)return;await delay(30);}
+      assert.equal((await state()).paused,expected);
+    };
+    try {
     await page.evaluate(() => { window.transmissionLab.play(); document.activeElement?.blur(); });
-    await menu('실험', '재생 / 일시정지'); await page.waitForFunction(() => window.transmissionLab.getState().paused);
-    await page.keyboard.press('Space'); await page.waitForFunction(() => !window.transmissionLab.getState().paused);
-    await nativeShortcut('P', true); await page.waitForFunction(() => window.transmissionLab.getState().paused);
+    await menu('실험', '재생 / 일시정지'); await waitPaused(true);
+    await page.keyboard.press('Space'); await waitPaused(false);
+    await nativeShortcut('P', true); await waitPaused(true);
     await page.locator('#rpm').focus(); await page.keyboard.press('Space'); assert.equal((await state()).paused, true);
+    } finally { await page.clock.resume(); }
     for (const [label, preset] of [['입체 보기', 'isometric'], ['정면 보기', 'front'], ['위에서 보기', 'top']]) {
       await menu('보기', label); assert.equal(await page.locator(`[data-camera="${preset}"]`).evaluate(e => e.classList.contains('active')), true);
     }

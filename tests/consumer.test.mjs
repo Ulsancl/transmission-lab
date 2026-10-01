@@ -18,6 +18,7 @@ function observe(target, label) {
   target.on('console', message => { if (message.type() === 'error') errors.push({ page: label, kind: 'console', message: message.text() }); });
 }
 async function ready(target) {
+  target.setDefaultTimeout(90000);
   await target.waitForFunction(() => {
     const app = window.transmissionLab;
     return app?.getState().scene?.meshCount > 0 && ['advance', 'recordComparison', 'persistNow', 'showComparisons', 'toggleFocus'].every(key => typeof app[key] === 'function');
@@ -66,6 +67,10 @@ try {
   context = await browser.newContext({ viewport: { width: 1366, height: 768 }, deviceScaleFactor: 1, acceptDownloads: true });
   page = await context.newPage(); observe(page, 'primary');
   await page.goto(url); await ready(page);
+  if(process.env.CI==='true'){
+    await page.locator('#quality').selectOption('low');
+    await page.waitForFunction(()=>window.transmissionLab.getState().scene.effectiveQuality==='low');
+  }
 
   let captured;
   await check('DCT handover comparison exports and reloads the captured instant exactly', async () => {
