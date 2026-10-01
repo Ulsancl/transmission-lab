@@ -1,18 +1,17 @@
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
 import {mkdir,writeFile,readFile} from 'node:fs/promises';
-import {spawn} from 'node:child_process';
+import {createServer} from 'vite';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import * as THREE from 'three';
 import {createMachinedGear} from '../src/geometry/gears.js';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),version=JSON.parse(await readFile(path.join(root,'package.json'),'utf8')).version,output=path.join(root,'output',`scene-product-v${version}`);await mkdir(output,{recursive:true});
-const viteEntry=path.join(path.dirname(fileURLToPath(import.meta.resolve('vite/package.json'))),'bin/vite.js');
-const server=spawn(process.execPath,[viteEntry,'--host','127.0.0.1','--port','5198','--strictPort'],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});
+let server;
 let browser;const checks=[],records=[],errors=[];
 const check=async(name,fn)=>{await fn();checks.push(name);console.log('PASS '+name);};
 try{
- await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Server timeout')),15000);server.stdout.on('data',d=>{if(d.toString().includes('Local:')){clearTimeout(timer);resolve();}});server.on('exit',code=>{clearTimeout(timer);reject(new Error('Server exit '+code));});server.on('error',reject);});
+ server=await createServer({root,server:{host:'127.0.0.1',port:5198,strictPort:true}});await server.listen();
  browser=await chromium.launch({headless:true,args:['--use-angle=swiftshader','--enable-webgl']});const page=await browser.newPage({viewport:{width:1366,height:768},deviceScaleFactor:1});page.on('pageerror',e=>errors.push(e.message));
  await page.goto('http://127.0.0.1:5198/src/scene/product-preview.html');await page.waitForFunction(()=>window.qa?.scene);
  await check('Quality levels preserve gear tooth count, radii, bores and helix while reducing sampled surface triangles',()=>{
@@ -56,4 +55,4 @@ try{
  });
  await page.screenshot({path:path.join(output,'dct-labels.png')});await check('No browser errors',()=>assert.deepEqual(errors,[]));
  const result={checkedAt:new Date().toISOString(),browser:browser.version(),renderEnvironment:'Headless Chromium, ANGLE SwiftShader; these load metrics are not a benchmark of the user GPU.',checks,errors,records};await writeFile(path.join(output,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify({passed:checks.length,errors,quality:records.find(r=>r.renderQuality)?.renderQuality},null,2));
-}finally{await browser?.close();server.kill();}
+}finally{await browser?.close();await server?.close();}

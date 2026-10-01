@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
+import { createServer } from 'vite';
 import { chromium } from 'playwright';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,15 +59,8 @@ function assertFullVisibility(layout, selector) {
 
 try {
   if (!process.env.TRANSMISSION_CONSUMER_URL) {
-    server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '5181', '--strictPort'], { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Consumer test server did not start')), 20000);
-      let diagnostic = '';
-      server.stdout.on('data', data => { if (data.toString().includes('Local:')) { clearTimeout(timer); resolve(); } });
-      server.stderr.on('data', data => { diagnostic += data; if (/already in use|error/i.test(diagnostic)) { clearTimeout(timer); reject(new Error(diagnostic.trim())); } });
-      server.once('error', error => { clearTimeout(timer); reject(error); });
-      server.once('exit', code => { if (code) { clearTimeout(timer); reject(new Error(`Consumer test server exited ${code}: ${diagnostic}`)); } });
-    });
+    server = await createServer({ root, server: { host: '127.0.0.1', port: 5181, strictPort: true } });
+    await server.listen();
   }
   browser = await chromium.launch({ headless: true });
   context = await browser.newContext({ viewport: { width: 1366, height: 768 }, deviceScaleFactor: 1, acceptDownloads: true });
@@ -261,5 +254,5 @@ try {
   console.log(`All ${results.length} consumer checks passed.`);
 } finally {
   await fs.writeFile(path.join(output, 'consumer-results.json'), JSON.stringify({ version, passed: results.filter(r => r.passed).length, failed: results.filter(r => !r.passed).length, results, errors, evidence, rendererScope: 'Headless browser implementation checks; no physical GPU FPS claim.' }, null, 2));
-  await browser?.close(); server?.kill();
+  await browser?.close(); await server?.close();
 }

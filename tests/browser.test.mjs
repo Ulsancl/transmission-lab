@@ -1,15 +1,16 @@
 import { chromium } from 'playwright';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { createServer } from 'vite';
 import { TRANSMISSIONS } from '../src/model.js';
 
 const url=process.env.TRANSMISSION_TEST_URL||'http://127.0.0.1:5175';
 let server;
 if(!process.env.TRANSMISSION_TEST_URL){
- server=spawn(process.execPath,['node_modules/vite/bin/vite.js','--host','127.0.0.1','--port','5175','--strictPort'],{cwd:process.cwd(),windowsHide:true,stdio:['ignore','pipe','pipe']});
- await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Test server did not start')),15000);server.stdout.on('data',d=>{if(d.toString().includes('Local:')){clearTimeout(timer);resolve();}});server.stderr.on('data',d=>{if(d.toString().includes('already in use')){clearTimeout(timer);reject(new Error(d.toString()));}});server.on('error',reject);});
+ server=await createServer({root:fileURLToPath(new URL('..',import.meta.url)),server:{host:'127.0.0.1',port:5175,strictPort:true}});
+ await server.listen();
 }
 const version=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8')).version;
 const output=path.resolve(`output/qa-v${version}`);await fs.mkdir(output,{recursive:true});
@@ -187,4 +188,4 @@ try {
  assert.deepEqual(errors,[]);results.push({name:'No browser errors',passed:true});
  await fs.writeFile(path.join(output,'browser-results.json'),JSON.stringify({passed:results.length,results,errors},null,2));
  console.log(`All ${results.length} browser checks passed.`);
-}finally{await browser.close();server?.kill();}
+}finally{await browser.close();await server?.close();}
