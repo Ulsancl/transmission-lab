@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { TRANSMISSIONS } from './model.js';
 import { createMachinedGear } from './geometry/gears.js';
 import { createGearboxHousing } from './geometry/housing.js';
+import { radialBearingRatios, radialBearingKinematics, externalGearDrivenPhase } from './mechanical-motion.js';
 
 const C = { steel: 0x89929c, dark: 0x343b43, blue: 0x58d8df, amber: 0xffbe54, green: 0x63e1b6, purple: 0xb39cff, red: 0xff7185 };
 const NAMES = {
@@ -93,6 +95,7 @@ function rod(a, b, radius, mat) {
 function machinedGear(teeth, radius, color, thickness = 0.32, internal = false, options = {}) {
   return createMachinedGear({ teeth, pitchRadius: radius, width: thickness, internal, helixDegrees: internal ? -20 : 25, boreRadius: Math.min(0.18, radius * 0.32),
     steelMaterial: material(color, { bumpMap: getMetalTextures().lathed, bumpScale: 0.004, roughness: 0.23, surface: 'recessed machined gear web' }),
+    flankMaterial: material(color, { bumpMap: getMetalTextures().brushed, bumpScale: 0.002, roughness: 0.27, surface: 'ground involute tooth flanks' }),
     faceMaterial: material(color, { bumpMap: getMetalTextures().lathed, bumpScale: 0.004, roughness: 0.21, surface: 'involute helical machined steel' }),
     darkMaterial: material(0x4b535c, { roughness: 0.27, surface: 'gear retaining rings' }), ...options });
 }
@@ -178,7 +181,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   container.appendChild(renderer.domElement);
   const camera = new THREE.PerspectiveCamera(36, 1, 0.05, 100);
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true; controls.dampingFactor = 0.07; controls.minDistance = 6; controls.maxDistance = 40;
+  controls.enableDamping = true; controls.dampingFactor = 0.07; controls.minDistance = 1.2; controls.maxDistance = 40;
   controls.maxPolarAngle = Math.PI * 0.89; controls.target.set(0, 0, 0);
   const environmentGenerator = new THREE.PMREMGenerator(renderer), studio = new RoomEnvironment();
   let environmentTarget = environmentGenerator.fromScene(studio, 0.035); scene.environment = environmentTarget.texture; scene.environmentIntensity = 0.72; studio.dispose(); environmentGenerator.dispose();
@@ -208,6 +211,8 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   function gear(teeth, radius, color, thickness = 0.32, internal = false, options = {}) { return machinedGear(teeth, radius, color, thickness, internal, { ...options, detail: effectiveQuality }); }
   const pickRay = new THREE.Raycaster(), mouse = new THREE.Vector2();
   let parts = new Map(), rotors = [], selectable = [], flowRoutes = [], particleMeshes = [], beltSegments = [], pulleyParts = null, preselectionMarkers = [], selectorForks = [], gearboxHousing = null;
+  let bearingDetails = [];
+  let focusedPart = null;
   let type = 'mt', currentSnapshot = null, selected = null, pointerStart = null, lastPick = null, width = 1, height = 1, beltTravel = 0, lastFitExplode = -1, lastCategories = '';
   const ownedMaterials = new Set();
   const selectionOutline = new THREE.Box3Helper(new THREE.Box3(), 0x9fdae7); selectionOutline.material.transparent = true; selectionOutline.material.opacity = 0.42; selectionOutline.visible = false; scene.add(selectionOutline);
@@ -311,13 +316,37 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     const bearings = new THREE.Group(), seals = new THREE.Group();
     for (const [x, y, z, key, axis = 'x', shaftRadius = 0.145] of entries) {
       const bearing = new THREE.Group();
-      const ballCenter = shaftRadius + 0.128;
-      bearing.add(annulus(shaftRadius + 0.235, ballCenter + 0.035, 0.22, material(C.steel, { roughness: 0.19, surface: 'stationary bearing outer race' })));
-      const inner = new THREE.Group(); inner.add(annulus(shaftRadius + 0.085, shaftRadius, 0.22, material(C.steel, { roughness: 0.15, surface: 'rotating bearing inner race' }))); bearing.add(inner); rotate(inner, key);
+      const ballCenter = shaftRadius + 0.128, ballRadius = 0.048;
+      // Grooves touch balls at R ± r; larger curvature leaves axial clearance.
+      const race = outer => {
+        const grooveRadius = ballRadius * 1.05, grooveHalfWidth = 0.038;
+        const center = ballCenter + (outer ? -1 : 1) * (grooveRadius - ballRadius);
+        const radialAt = x => center + (outer ? 1 : -1) * Math.sqrt(grooveRadius ** 2 - x ** 2);
+        const profile = [new THREE.Vector2(radialAt(grooveHalfWidth), -0.11)];
+        for (let j = 0; j <= 16; j += 1) { const x = -grooveHalfWidth + 2 * grooveHalfWidth * j / 16; profile.push(new THREE.Vector2(radialAt(x), x)); }
+        profile.push(new THREE.Vector2(radialAt(grooveHalfWidth), 0.11));
+        const backRadius = outer ? shaftRadius + 0.235 : shaftRadius;
+        profile.push(new THREE.Vector2(backRadius, 0.11), new THREE.Vector2(backRadius, -0.11), profile[0].clone());
+        if (outer) profile.reverse();
+        const mesh = new THREE.Mesh(new THREE.LatheGeometry(profile, effectiveQuality === 'high' ? 80 : 48), material(C.steel, { roughness: outer ? 0.29 : 0.24, bumpMap: null, surface: outer ? 'stationary grooved bearing outer race' : 'rotating grooved bearing inner race' }));
+        const smoothGeometry = mesh.geometry; mesh.geometry = toCreasedNormals(smoothGeometry, Math.PI / 5); smoothGeometry.dispose();
+        mesh.rotation.z = -Math.PI / 2; mesh.castShadow = true; mesh.receiveShadow = true; return mesh;
+      };
+      bearing.add(race(true));
+      const inner = new THREE.Group(); inner.add(race(false)); bearing.add(inner); rotate(inner, key);
       const cage = new THREE.Group();
-      for (let i = 0; i < 10; i += 1) { const a = i * TAU / 10; const ball = new THREE.Mesh(new THREE.SphereGeometry(0.048, 14, 10), material(0xd3d6da, { roughness: 0.12, surface: 'bearing balls' })); ball.position.set(0, Math.cos(a) * ballCenter, Math.sin(a) * ballCenter); cage.add(ball); }
+      const ballGeometry = new THREE.SphereGeometry(ballRadius, 20, 14), positions = ballGeometry.attributes.position, colors = [];
+      // A subdued inspection stripe makes spin visible on a spherical surface.
+      for (let i = 0; i < positions.count; i += 1) { const color = new THREE.Color(Math.abs(positions.getY(i)) < ballRadius * 0.12 ? 0x4d6575 : 0xd3d6da); colors.push(color.r, color.g, color.b); }
+      ballGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      const balls = new THREE.InstancedMesh(ballGeometry, material(0xffffff, { physicalColor: true, vertexColors: true, bumpMap: null, roughness: 0.17, surface: 'bearing balls with inspection stripe' }), 10);
+      const matrix = new THREE.Matrix4();
+      for (let i = 0; i < 10; i += 1) { const a = i * TAU / 10; matrix.makeTranslation(0, Math.cos(a) * ballCenter, Math.sin(a) * ballCenter); balls.setMatrixAt(i, matrix); }
+      balls.castShadow = true; balls.instanceMatrix.setUsage(THREE.DynamicDrawUsage); balls.computeBoundingSphere(); cage.add(balls);
       const cageRing = torus(ballCenter, 0.013, material(0x8f8365, { physicalColor: true, metalness: 0.85, surface: 'bearing cage' })); cageRing.position.x = 0.1; cage.add(cageRing);
-      bearing.add(cage); rotate(cage, key, 'x', 0.42); if (axis === 'z') bearing.rotation.y = Math.PI / 2;
+      const ratios = radialBearingRatios({ pitchRadius: ballCenter, ballRadius });
+      bearing.add(cage); rotate(cage, key, 'x', ratios.cageInner); if (axis === 'z') bearing.rotation.y = Math.PI / 2;
+      bearingDetails.push({ key, pitchRadius: ballCenter, ballRadius, cage, balls, ballAngle: 0, ratios });
       bearing.position.set(x, y, z); bearings.add(bearing);
       const seal = new THREE.Group(); seal.add(annulus(shaftRadius + 0.195, shaftRadius + 0.045, 0.07, material(C.dark), Math.PI * 0.66));
       seal.add(torus(shaftRadius + 0.04, 0.037, material(0x18191b, { physicalColor: true, metalness: 0.02, roughness: 0.8, surface: 'elastomer shaft sealing lip' })));
@@ -489,12 +518,16 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     const reversePair = new THREE.Group();
     const reverseInput = gear(18, 0.36, C.red, 0.18, false, { helixDegrees: 0, boreRadius: dual ? 0.245 : 0.17 }); reverseInput.position.y = upperY;
     const reverseOutput = gear(62, 1.24, C.red, 0.18, false, { helixDegrees: 0, boreRadius: 0.19 }); reverseOutput.position.y = lowerY;
+    const idlerPhase = externalGearDrivenPhase({ driverTeeth: 18, drivenTeeth: 18, centerAngleRad: Math.atan2(0.527913, 0.4104 - upperY) });
+    reverseOutput.rotation.x = externalGearDrivenPhase({ driverTeeth: 18, drivenTeeth: 62, centerAngleRad: Math.atan2(-0.527913, lowerY - 0.4104), driverAngleRad: idlerPhase });
     if (dual) { const dog = gear(24, 0.31, C.steel, 0.06, false, { helixDegrees: 0, boreRadius: 0.195 }); dog.position.set(0.2, lowerY, 0); reversePair.add(dog); rotate(dog, 'gear-R-output'); }
     reversePair.add(reverseInput, reverseOutput); addPart('gear-R', reversePair, [reverseX, 0, 0], [dual ? -0.85 : 0.85, 0.05, 0], [0, -2.57, 0.2], C.red, false); rotate(reverseInput, 'gear-R-input'); rotate(reverseOutput, 'gear-R-output');
     const reverse = gear(18, 0.36, C.red, 0.18, false, { helixDegrees: 0, boreRadius: 0.105 }); addPart('reverse-idler', reverse, [reverseX, 0.4104, 0.527913], [dual ? -0.85 : 0.85, 0.1, 0.75], [0, 0.65, 0.4], C.red); rotate(reverse, 'reverse-idler');
+    reverse.rotation.x = idlerPhase;
     const finalDrive = new THREE.Group();
     const counterGear = gear(32, 0.46, C.green, 0.29, false, { helixDegrees: 25, boreRadius: 0.185 }); counterGear.position.y = 0.46;
     const axleGear = gear(32, 0.46, C.green, 0.29, false, { helixDegrees: -25, boreRadius: 0.185 }); axleGear.position.y = -0.46;
+    axleGear.rotation.x = externalGearDrivenPhase({ driverTeeth: 32, drivenTeeth: 32, centerAngleRad: Math.PI });
     const flange = annulus(0.4, 0.19, 0.12, material(C.steel)); flange.position.set(0.28, -0.46, 0); axleGear.add(flange); flange.position.y = 0;
     for (let j = 0; j < 6; j += 1) { const a = j * TAU / 6, bolt = cylinder(0.033, 0.1, material(C.steel), 6); bolt.position.set(0.36, Math.cos(a) * 0.315, Math.sin(a) * 0.315); axleGear.add(bolt); }
     finalDrive.add(counterGear, axleGear); addPart('final-drive', finalDrive, [finalX, lowerY - 0.46, 0], [0.9, -0.5, 0], [0.15, -1, 0], C.green, false); rotate(counterGear, 'output-shaft'); rotate(axleGear, 'output');
@@ -786,12 +819,15 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
 
   function rebuildQuality(next) {
     if (effectiveQuality === next) return;
-    const selection = selected, angles = rotors.map(r => r.object.rotation[r.axis]);
+    const selection = selected, angles = rotors.map(r => r.object.rotation[r.axis]), ballAngles = bearingDetails.map(b => b.ballAngle);
     effectiveQuality = next; configureQuality(); setType(type, true); selected = selection;
     rotors.forEach((r, i) => { if (Number.isFinite(angles[i])) r.object.rotation[r.axis] = angles[i]; });
+    bearingDetails.forEach((b, i) => { if (Number.isFinite(ballAngles[i])) b.ballAngle = ballAngles[i]; });
     lastFrameWall = 0;
   }
   function disposeAssembly() {
+    bearingDetails = [];
+    assembly.traverse(o => { if (o.isInstancedMesh) o.dispose(); });
     const geometries = new Set(), materials = new Set();
     assembly.traverse(o => { if (o.geometry) geometries.add(o.geometry); if (o.material) for (const m of (Array.isArray(o.material) ? o.material : [o.material])) materials.add(m); });
     for (const g of geometries) g.dispose(); for (const m of materials) m.dispose();
@@ -799,6 +835,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   }
 
   function setType(nextType, preserveCamera = false) {
+    if (!preserveCamera) focusedPart = null;
     renderInvalidated = true;
     type = ['mt', 'dct', 'cvt', 'at', 'ecvt'].includes(nextType) ? nextType : 'mt'; disposeAssembly(); selected = null; if (!preserveCamera) { lastFitExplode = -1; lastCategories = ''; }
     if (type === 'mt' || type === 'dct') buildParallel(type === 'dct');
@@ -813,7 +850,27 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     const describedId = id === 'input' ? (type === 'at' ? 'turbine' : 'engine') : id;
     selected = parts.has(describedId) ? describedId : null; renderInvalidated = true; onSelectPart(selected);
   }
-  function selectPart(id) { selected = parts.has(id) ? id : null; renderInvalidated = true; }
+  function selectPart(id) { selected = parts.has(id) ? id : null; if (focusedPart && focusedPart !== selected) setCamera('isometric'); renderInvalidated = true; }
+
+  function inspectionObject() { return focusedPart === 'bearings' ? bearingDetails[0]?.cage.parent : parts.get(focusedPart)?.group; }
+  function syncPartVisibility(view = lastUpdateView || {}) {
+    for (const [id,p] of parts) if(id !== 'housing') p.group.visible = view[p.category] !== false && (!focusedPart || focusedPart === id);
+    gearboxHousing?.update(view);
+    if(focusedPart && focusedPart !== 'housing' && gearboxHousing)gearboxHousing.group.visible=false;
+    for(let i=0;i<bearingDetails.length;i+=1)bearingDetails[i].cage.parent.visible=focusedPart!=='bearings'||i===0;
+  }
+  function bearingDiagnostics() { return bearingDetails.map(b => ({ key:b.key, pitchRadius:b.pitchRadius, ballRadius:b.ballRadius, cageAngle:b.cage.rotation.x, ballAngle:b.ballAngle, ...radialBearingKinematics({pitchRadius:b.pitchRadius,ballRadius:b.ballRadius,innerRpm:currentSnapshot?.partRpm?.[b.key]||0}) })); }
+
+  function focusPart(id = selected) {
+    if (!parts.has(id) || lastUpdateView?.[parts.get(id).category] === false) return false;
+    focusedPart = id; renderInvalidated = true;
+    syncPartVisibility();
+    const group = inspectionObject();
+    assembly.updateWorldMatrix(true, true);
+    const center = new THREE.Box3().setFromObject(group).getCenter(new THREE.Vector3());
+    const direction = id === 'bearings' ? point(1,0.08,0.12).applyQuaternion(group.getWorldQuaternion(new THREE.Quaternion())).normalize() : camera.position.clone().sub(controls.target).normalize();
+    controls.target.copy(center); camera.position.copy(center).addScaledVector(direction, 8); fitCamera(); return true;
+  }
 
   function resize() {
     renderInvalidated = true;
@@ -825,13 +882,16 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
 
   function fitCamera() {
     assembly.updateWorldMatrix(true, true); controls.update();
-    const boxes = [...parts.values()].filter(p => p.group.visible).map(p => new THREE.Box3().setFromObject(p.group)).filter(box => !box.isEmpty());
+    const focus = parts.get(focusedPart);
+    if (focus && !focus.group.visible) focusedPart = null;
+    const groups = focusedPart ? [focusedPart === 'bearings' ? bearingDetails[0].cage.parent : focus.group] : [...parts.values()].filter(p => p.group.visible).map(p => p.group);
+    const boxes = groups.map(group => new THREE.Box3().setFromObject(group)).filter(box => !box.isEmpty());
     if (!boxes.length) return;
     const direction = camera.position.clone().sub(controls.target).normalize();
     const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
     const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
     const tangent = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
-    let distance = 8;
+    let distance = focusedPart ? 1.6 : 8;
     for (const box of boxes) for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) {
       const relative = point(x, y, z).sub(controls.target);
       const depth = relative.dot(direction);
@@ -841,6 +901,8 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   }
 
   function setCamera(preset = 'isometric') {
+    focusedPart = null;
+    syncPartVisibility();
     const center = type === 'mt' || type === 'dct' ? point(0, -0.35, 0) : point(0, 0.25, 0);
     const aspect = width / height;
     const distance = aspect < 1.1 ? 19 : aspect > 2 ? 12.6 : 15.5;
@@ -971,8 +1033,9 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     if (contextLost) return;
     if (dtSeconds <= 0 && !renderInvalidated && !cameraChanged && snapshot === lastRenderedSnapshot && viewKey === lastRenderedViewKey) { skippedIdleFrames += 1; return; }
     const dt = clamp(dtSeconds, 0, 1), speed = clamp(view.speed ?? 0.015, 0, 0.12), explode = clamp(view.explode ?? 0.06, 0, 1), housingAmount = clamp(view.housing ?? 1, 0, 1);
-    for (const [id, p] of parts) { p.group.position.copy(p.base).addScaledVector(p.explode, explode); if (id !== 'housing') p.group.visible = view[p.category] !== false; }
-    gearboxHousing?.update(view);
+    for (const p of parts.values()) p.group.position.copy(p.base).addScaledVector(p.explode, explode);
+    if (focusedPart && view[parts.get(focusedPart)?.category] === false) focusedPart = null;
+    syncPartVisibility(view);
     const categories = [...['bearings', 'clutches', 'lubrication'].map(c => view[c] !== false), gearboxHousing?.group.visible ?? false, view.housingMode || 'cutaway'].join('/');
     if (Math.abs(explode - lastFitExplode) > 0.0005 || categories !== lastCategories) { fitCamera(); lastFitExplode = explode; lastCategories = categories; }
     const active = new Set(snapshot.activeParts || []), preselected = new Set(snapshot.preselectedParts || []); if (view.selectedPart !== undefined) selected = view.selectedPart;
@@ -988,6 +1051,15 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       if (!Number.isFinite(rpm)) rpm = rotor.key === 'engine' || rotor.key === 'input' ? snapshot.inputRpm : rotor.key === 'output' ? snapshot.outputRpm : 0;
       if (rotor.subtract) rpm -= snapshot.partRpm?.[rotor.subtract] || 0;
       rotor.object.rotation[rotor.axis] = (rotor.object.rotation[rotor.axis] + rpm * TAU / 60 * dt * speed * rotor.multiplier) % TAU;
+    }
+    const ballMatrix = new THREE.Matrix4();
+    for (const bearing of bearingDetails) {
+      bearing.ballAngle = (bearing.ballAngle + (snapshot.partRpm?.[bearing.key] || 0) * bearing.ratios.ballRelativeInner * TAU / 60 * dt * speed) % TAU;
+      for (let i = 0; i < bearing.balls.count; i += 1) {
+        const a = i * TAU / bearing.balls.count;
+        ballMatrix.makeRotationX(bearing.ballAngle + a); ballMatrix.setPosition(0, Math.cos(a) * bearing.pitchRadius, Math.sin(a) * bearing.pitchRadius); bearing.balls.setMatrixAt(i, ballMatrix);
+      }
+      bearing.balls.instanceMatrix.needsUpdate = true;
     }
     const projected = new THREE.Vector3();
     const labelCandidates = [];
@@ -1022,6 +1094,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
         if (onScreen || isSelected) {
           const x = (projected.x + 1) * width / 2, y = (1 - projected.y) * height / 2;
           const anchor = p.mechanicalAnchor.clone().add(p.group.position).applyMatrix4(p.group.parent.matrixWorld).project(camera);
+          if (focusedPart === id) anchor.copy(new THREE.Box3().setFromObject(inspectionObject()).getCenter(new THREE.Vector3()).project(camera));
           labelCandidates.push({ p, x: Number.isFinite(x) ? x : width / 2, y: Number.isFinite(y) ? y : height / 2, anchorX: (anchor.x + 1) * width / 2, anchorY: (1 - anchor.y) * height / 2, priority: isSelected ? 0 : isActive ? 1 : 2 });
         }
       }
@@ -1041,11 +1114,11 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       p.group.traverse(o => { for (const layer of o.userData.stackLayers || []) layer.mesh.position.x = layer.index * (0.08 - clamp(engagement, 0, 1) * 0.023); });
     }
     const selectedGroup = parts.get(selected)?.group;
-    selectionOutline.visible = Boolean(selectedGroup?.visible); if (selectionOutline.visible) { selectionOutline.box.setFromObject(selectedGroup); selectionOutline.updateMatrixWorld(true); }
+    selectionOutline.visible = Boolean(selectedGroup?.visible) && !focusedPart; if (selectionOutline.visible) { selectionOutline.box.setFromObject(selectedGroup); selectionOutline.updateMatrixWorld(true); }
     for (const r of flowRoutes) {
       const routePower = r.oil ? 1 : r.power ? r.power(snapshot) : snapshot.outputPowerKW;
       const oilRunning = type === 'mt' ? Math.max(Math.abs(snapshot.partRpm?.['input-shaft'] || 0), Math.abs(snapshot.partRpm?.['output-shaft'] || 0)) > 1 : type === 'ecvt' ? Math.max(Math.abs(snapshot.sunRpm || 0), Math.abs(snapshot.ringRpm || 0), Math.abs(snapshot.carrierRpm || 0)) > 1 : Math.abs(snapshot.inputRpm || 0) > 1;
-      const enabled = explode < 0.4 && (r.oil ? !(view.housingMode === 'closed' && housingAmount > 0.8) && view.lubrication !== false && view.oilFlow !== false && oilRunning : view.flow !== false && (!r.condition || r.condition(snapshot)) && r.ids.every(id => active.has(id)) && Number.isFinite(routePower) && Math.abs(routePower) > 0.01);
+      const enabled = !focusedPart && explode < 0.4 && (r.oil ? !(view.housingMode === 'closed' && housingAmount > 0.8) && view.lubrication !== false && view.oilFlow !== false && oilRunning : view.flow !== false && (!r.condition || r.condition(snapshot)) && r.ids.every(id => active.has(id)) && Number.isFinite(routePower) && Math.abs(routePower) > 0.01);
       r.line.visible = enabled;
       r.progress = (r.progress + dt * (0.24 + Math.abs(snapshot.inputRpm || 0) / 5500) * 0.6 * Math.sign(routePower || 1) + 1) % 1;
       r.beads.forEach((bead, i) => { bead.visible = enabled; if (enabled) bead.position.copy(r.curve.getPointAt((r.progress + i / r.beads.length) % 1)); });
@@ -1083,14 +1156,15 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   configureQuality(); resize(); setType('mt');
 
   return {
-    setType, update, selectPart, resetCamera, setCamera,
+    setType, update, selectPart, focusPart, resetCamera, setCamera, getBearingDiagnostics: bearingDiagnostics,
     capture,
     getDiagnostics() {
       let meshCount = 0; assembly.traverse(o => { if (o.isMesh) meshCount += 1; });
       const entries = [...parts.values()];
       const gears = []; for (const p of entries) p.group.traverse(o => { if (o.userData.gear) gears.push({ partId: p.id, ...o.userData.gear }); });
-      return { type, partIds: [...parts.keys()], parts: entries.map(p => ({ id: p.id, category: p.category, visible: p.group.visible })),
+      return { type, focusedPart, partIds: [...parts.keys()], parts: entries.map(p => ({ id: p.id, category: p.category, visible: p.group.visible })),
         gears, housing: gearboxHousing?.diagnostics() || null, lastPick,
+        bearings: bearingDiagnostics(),
         labelPositions: entries.filter(p => p.labelElement.style.display !== 'none').map(p => ({ id: p.id, x: Number.parseFloat(p.labelElement.style.left), y: Number.parseFloat(p.labelElement.style.top) })),
         materialProperties: entries.map(p => ({ id: p.id, category: p.category, surfaces: [...new Set(p.materials.map(m => m.userData.surface))], materials: [...new Set(p.materials)].slice(0, 4).map(m => ({ surface: m.userData.surface, color: `#${m.color.getHexString()}`, metalness: m.metalness, roughness: m.roughness, bumpScale: m.bumpScale, emissiveIntensity: m.emissiveIntensity })) })),
         oilPaths: flowRoutes.filter(r => r.oil).map(r => ({ visible: r.line.visible, animatedDrops: r.beads.filter(b => b.visible).length, color: `#${r.line.material.color.getHexString()}`, phase: r.progress, firstDrop: r.beads[0]?.position.toArray() })),

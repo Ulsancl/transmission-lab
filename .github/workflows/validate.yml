@@ -48,6 +48,8 @@ jobs:
         run: npm run test:consumer
       - name: Verify readable anatomy and graphics recovery
         run: npm run test:scene-product
+      - name: Verify mechanical details and component inspection
+        run: npm run test:detail
       - name: Verify source desktop app
         run: npm run test:desktop
       - name: Package Windows installer

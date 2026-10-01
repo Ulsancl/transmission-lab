@@ -15,21 +15,29 @@ export function toothProfile(teeth, pitchRadius, internal = false, detail = 'hig
   const resolution = detailSettings(detail);
   const module = pitchRadius * 2 / teeth;
   const pressure = THREE.MathUtils.degToRad(20), base = pitchRadius * Math.cos(pressure);
-  const root = pitchRadius - module * 1.22, outer = pitchRadius + module * 0.98;
+  const root = pitchRadius + module * 1.22 * (internal ? 1 : -1);
+  const tip = pitchRadius + module * 0.98 * (internal ? -1 : 1);
   const pitch = TAU / teeth, half = Math.PI / (2 * teeth), invPitch = involute(pitchRadius, base);
-  const flank = radius => half + invPitch - involute(Math.max(base, radius), base);
+  // Internal teeth widen towards their outer root. Mirroring an external
+  // radius changes its base circle and therefore its working pressure angle.
+  const flank = radius => half + (internal ? 1 : -1) * (involute(Math.max(base, radius), base) - invPitch);
+  const flankStart = internal ? pitchRadius + module : Math.max(base, root);
+  const flankRadii = Array.from({ length: resolution.flanks + 1 }, (_, i) => flankStart + (tip - flankStart) * i / resolution.flanks);
+  // Preserve exact pitch-circle tooth thickness at every rendering quality.
+  if (!flankRadii.some(r => Math.abs(r - pitchRadius) < 1e-12)) flankRadii.push(pitchRadius);
+  flankRadii.sort((a, b) => internal ? b - a : a - b);
   const samples = [];
-  const add = (r, a) => { const radius = internal ? pitchRadius * 2 - r : r; samples.push(new THREE.Vector2(Math.cos(a) * radius, Math.sin(a) * radius)); };
+  const add = (radius, angle) => samples.push(new THREE.Vector2(Math.cos(angle) * radius, Math.sin(angle) * radius));
   for (let tooth = 0; tooth < teeth; tooth += 1) {
     const center = tooth * pitch;
-    const flankBase = flank(base), rootAngle = Math.min(pitch * 0.44, flankBase + pitch * 0.08);
+    const flankBase = flank(flankStart), rootAngle = Math.min(pitch * 0.44, flankBase + pitch * 0.08);
     add(root, center - pitch / 2); add(root, center - rootAngle);
     // Root fillets blend into the involute rather than forming rectangular steps.
-    for (let j = 1; j <= resolution.fillets; j += 1) { const t = j / resolution.fillets; add(root + (Math.max(base, root) - root) * t * t, center - rootAngle + (rootAngle - flankBase) * t); }
-    for (let j = 1; j <= resolution.flanks; j += 1) { const r = Math.max(base, root) + (outer - Math.max(base, root)) * j / resolution.flanks; add(r, center - flank(r)); }
-    const tipHalf = flank(outer); for (let j = 1; j <= resolution.tips; j += 1) add(outer, center - tipHalf + tipHalf * 2 * j / resolution.tips);
-    for (let j = 1; j <= resolution.flanks; j += 1) { const r = outer - (outer - Math.max(base, root)) * j / resolution.flanks; add(r, center + flank(r)); }
-    for (let j = 1; j <= resolution.fillets; j += 1) { const t = j / resolution.fillets; add(Math.max(base, root) - (Math.max(base, root) - root) * (1 - (1 - t) ** 2), center + flankBase + (rootAngle - flankBase) * t); }
+    for (let j = 1; j <= resolution.fillets; j += 1) { const t = j / resolution.fillets; add(root + (flankStart - root) * t * t, center - rootAngle + (rootAngle - flankBase) * t); }
+    for (const r of flankRadii.slice(1)) add(r, center - flank(r));
+    const tipHalf = flank(tip); for (let j = 1; j <= resolution.tips; j += 1) add(tip, center - tipHalf + tipHalf * 2 * j / resolution.tips);
+    for (const r of flankRadii.slice(0, -1).reverse()) add(r, center + flank(r));
+    for (let j = 1; j <= resolution.fillets; j += 1) { const t = j / resolution.fillets; add(flankStart - (flankStart - root) * (1 - (1 - t) ** 2), center + flankBase + (rootAngle - flankBase) * t); }
     add(root, center + pitch / 2);
   }
   const clean = samples.filter((p, i) => i === 0 || p.distanceToSquared(samples[i - 1]) > 1e-16);
@@ -48,7 +56,7 @@ function circle(radius, count = 72, reverse = false, splined = false) {
 function extrudedTwistedContours(outer, holes, width, pitchRadius, helixDegrees, chamfer = 0.011, detail = 'high') {
   const angleSlope = Math.tan(THREE.MathUtils.degToRad(helixDegrees)) / pitchRadius;
   const contourList = [outer, ...holes];
-  const positions = [], uv = [], indices = [];
+  const positions = [], uv = [], flankIndices = [], faceIndices = [];
   const steps = detailSettings(detail).axial;
   const layers = [-width / 2, ...Array.from({ length: steps }, (_, i) => -width / 2 + chamfer + (width - chamfer * 2) * i / (steps - 1)), width / 2];
   const maxRadius = Math.max(...outer.map(p => p.length()));
@@ -64,6 +72,7 @@ function extrudedTwistedContours(outer, holes, width, pitchRadius, helixDegrees,
     }
     for (let layer = 0; layer < layers.length - 1; layer += 1) for (let i = 0; i < count; i += 1) {
       const a = start + layer * count + i, b = start + layer * count + (i + 1) % count, d = a + count, e = b + count;
+      const indices = layer === 0 || layer === layers.length - 2 ? faceIndices : flankIndices;
       indices.push(a, b, d, b, e, d);
     }
   }
@@ -75,9 +84,11 @@ function extrudedTwistedContours(outer, holes, width, pitchRadius, helixDegrees,
       const p = all[i], radius = p.length() + (i < outer.length ? -chamfer : chamfer), angle = Math.atan2(p.y, p.x) + twist;
       positions.push(x, Math.cos(angle) * radius, Math.sin(angle) * radius); uv.push(Math.cos(angle) * radius / (maxRadius * 2) + 0.5, Math.sin(angle) * radius / (maxRadius * 2) + 0.5);
     }
-    for (const tri of faces) if (sign > 0) indices.push(start + tri[0], start + tri[1], start + tri[2]); else indices.push(start + tri[2], start + tri[1], start + tri[0]);
+    for (const tri of faces) if (sign > 0) faceIndices.push(start + tri[0], start + tri[1], start + tri[2]); else faceIndices.push(start + tri[2], start + tri[1], start + tri[0]);
   }
-  const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); geometry.setIndex(indices); geometry.computeVertexNormals(); geometry.computeBoundingBox(); geometry.computeBoundingSphere();
+  const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); geometry.setIndex([...flankIndices, ...faceIndices]);
+  geometry.addGroup(0, flankIndices.length, 0); geometry.addGroup(flankIndices.length, faceIndices.length, 1);
+  geometry.computeVertexNormals(); geometry.computeBoundingBox(); geometry.computeBoundingSphere();
   geometry.userData = { profile: 'sampled involute', helixDegrees, width, pitchRadius, axialLayers: layers.length, chamfer, detail }; return geometry;
 }
 
@@ -104,13 +115,13 @@ function shapeMesh(shape, depth, material, detail = 'high') {
   geometry.translate(0, 0, -depth / 2); geometry.rotateY(Math.PI / 2); const mesh = new THREE.Mesh(geometry, material); mesh.castShadow = true; mesh.receiveShadow = true; return mesh;
 }
 
-export function createMachinedGear({ teeth, pitchRadius, width = 0.32, helixDegrees = 25, internal = false, boreRadius = 0.18, steelMaterial, faceMaterial, darkMaterial, detail = 'high' }) {
+export function createMachinedGear({ teeth, pitchRadius, width = 0.32, helixDegrees = 25, internal = false, boreRadius = 0.18, steelMaterial, faceMaterial, flankMaterial = steelMaterial, darkMaterial, detail = 'high' }) {
   const group = new THREE.Group();
   const root = pitchRadius - pitchRadius * 2 / teeth * 1.22;
   boreRadius = Math.min(boreRadius, root * 0.81);
   const hubRadius = Math.min(root * 0.94, Math.max(boreRadius + 0.025, Math.min(pitchRadius * 0.3, root * 0.7)));
   const rimBore = internal ? boreRadius : Math.min(root * 0.965, Math.max(hubRadius + 0.02, root * 0.64));
-  const toothBody = new THREE.Mesh(createHelicalGearGeometry({ teeth, pitchRadius, width, helixDegrees, internal, boreRadius: rimBore, detail }), faceMaterial); toothBody.castShadow = true; toothBody.receiveShadow = true; group.add(toothBody);
+  const toothBody = new THREE.Mesh(createHelicalGearGeometry({ teeth, pitchRadius, width, helixDegrees, internal, boreRadius: rimBore, detail }), [flankMaterial, faceMaterial]); toothBody.castShadow = true; toothBody.receiveShadow = true; group.add(toothBody);
   let reliefHoleCount = 0;
   if (!internal) {
     const webOuter = Math.min(root * 0.99, Math.max(rimBore + 0.008, root * 0.72));
