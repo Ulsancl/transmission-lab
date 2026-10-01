@@ -37,9 +37,15 @@ try {
   assert.ok(new Set(geometries.map(g=>g.meshes)).size>=4);await fs.writeFile(path.join(output,'scene-diagnostics.json'),JSON.stringify(geometries,null,2));
  });
  await check('DCT shift swaps odd and even clutch after preselection',async()=>{
-  await page.locator('[data-type=dct]').click();await page.evaluate(()=>window.transmissionLab.play());
-  await page.locator('[data-gear="2"]').click();await page.waitForFunction(()=>window.transmissionLab.getState().snapshot.clutchB>.99);
+  await page.locator('[data-type=dct]').click();await page.evaluate(()=>window.transmissionLab.pause());
+  assert.equal((await page.evaluate(()=>window.transmissionLab.getState().snapshot)).nextGear,'2');
+  await page.locator('[data-gear="2"]').click();
+  await page.evaluate(()=>window.transmissionLab.advance(.35));
+  const handover=await page.evaluate(()=>window.transmissionLab.getState().snapshot);
+  assert.ok(handover.clutchA>0&&handover.clutchB>0,'Both clutches participate during handover');
+  await page.evaluate(()=>window.transmissionLab.advance(.65));
   const s=await page.evaluate(()=>window.transmissionLab.getState().snapshot);assert.ok(s.clutchA<.01);assert.equal(s.gear,'2');
+  assert.ok(s.clutchB>.99);
  });
  await check('Neutral and open clutch stop delivered torque',async()=>{
   await page.locator('[data-type=mt]').click();await page.locator('[data-gear=N]').click();
