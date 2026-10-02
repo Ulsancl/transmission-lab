@@ -5,6 +5,7 @@ import packageInfo from '../package.json';
 import { captureComparison, createProject, readProject, COMPARISON_LIMIT } from './project.js';
 import { advanceClock } from './clock.js';
 import { createProjectStorage } from './storage.js';
+import { componentReadouts } from './detail-readouts.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -182,12 +183,14 @@ function renderInspector() {
     const filters=Object.entries(CATEGORIES).map(([key,label])=>{const count=key==='all'?d.parts.length:d.parts.filter(p=>p.category===key).length;return `<button data-part-filter="${key}" aria-pressed="${key===partFilter}" ${count?'':'disabled'}>${label}<small>${count}</small></button>`;}).join('');
     $('#inspector-content').innerHTML=`<p class="inspector-intro">기어뿐 아니라 연결·지지·윤활 부품도 살펴보세요.</p><div class="part-filters" aria-label="부품 종류">${filters}</div><div class="parts-list">${filtered.map(p=>`<button data-part="${esc(p.id)}" class="part-button ${p.id===selectedPart?'selected':''} ${view[categoryVisibility[p.category]]===false?'is-hidden':''}"><span class="part-index">${String(d.parts.indexOf(p)+1).padStart(2,'0')}</span><span>${esc(p.name)}</span><i class="part-status ${snapshot.activeParts?.includes(p.id)?'transmitting':''}"></i></button>`).join('')}</div><article class="part-detail"><span class="eyebrow">${selectedPart?'SELECTED COMPONENT':'COMPONENT GUIDE'}${part?.category==='lubrication'?' / LUBRICATION':''}</span><h3>${esc(part?.name||d.name)}</h3><p>${esc(part?.description||d.description)}</p><div class="part-live"><span id="part-motion-label">부품 회전수</span><b id="part-rpm">${fmt(snapshot.partRpm?.[part?.id])} <small>rpm</small></b></div></article>`;
     $('#part-rpm').dataset.part=part?.id||'';
+    $('.part-detail').insertAdjacentHTML('beforeend','<div class="component-detail-actions"><button id="focus-part" class="subtle-button">부품 단독 확대</button><button id="unfocus-part" class="subtle-button">전체 구조</button></div><section id="component-details" class="component-details" aria-label="부품 작동 상세"></section>');
   } else {
     const lesson=d.lessons[Math.min(lessonIndex,d.lessons.length-1)];
     $('#inspector-content').innerHTML=`<div class="principle-intro"><span class="principle-symbol">${META[type].tag}</span><p>${esc(d.description)}</p></div><div class="lesson-navigation">${d.lessons.map((_,i)=>`<button data-lesson="${i}" class="${i===lessonIndex?'active':''}" aria-label="원리 ${i+1}">${i+1}</button>`).join('')}</div><article class="lesson-card"><span class="eyebrow">HOW IT WORKS / ${String(lessonIndex+1).padStart(2,'0')}</span><h3>${esc(lesson?.title)}</h3><p>${esc(lesson?.text)}</p></article><div class="planetary-readouts" id="planetary-readouts"></div>`;
   }
 }
 function updateUI() {
+  updateComponentDetails();
   $('#metric-input').textContent=fmt(snapshot.inputRpm);
   $('#metric-output').textContent=fmt(snapshot.outputRpm);
   $('#metric-ratio').textContent=Math.abs(snapshot.ratio)>0.001?fmt(snapshot.ratio,2):'—';
@@ -206,7 +209,7 @@ function updateUI() {
   if($('#part-rpm')) {
     const id=$('#part-rpm').dataset.part||selectedPart||TRANSMISSIONS[type].parts[0]?.id,part=TRANSMISSIONS[type].parts.find(p=>p.id===id),belt=id==='belt';
     const stationary=(part?.category==='lubrication'&&(id!=='oil-pump'||type==='ecvt'))||['housing','shaft-seals','shift-clutches','pulley-pistons'].includes(id);
-    if(id==='bearings') {const [shaft,bearing]=Object.entries(snapshot.bearingRpm||{})[0]||[];const shaftName={'input-shaft':'입력축','shaft-a':'K1 축',primary:'입력 풀리',input:'터빈축',engine:'캐리어'}[shaft]||'대표 축';$('#part-motion-label').textContent=`${shaftName} 내륜 / 외륜`;$('#part-rpm').innerHTML=bearing?`${fmt(bearing.inner)} / ${fmt(bearing.outer)} <small>rpm · 예시</small>`:'축별로 회전';}
+    if(id==='bearings') {const shown=scene?.getBearingDiagnostics()[0],shaft=shown?.key||Object.keys(snapshot.bearingRpm||{})[0],bearing=shaft?{inner:snapshot.partRpm?.[shaft]||0,outer:0}:null;const shaftName={'input-shaft':'입력축','shaft-a':'K1 축','shaft-b':'K2 축',primary:'입력 풀리',input:'터빈축',turbine:'터빈축',engine:'캐리어'}[shaft]||'대표 축';$('#part-motion-label').textContent=`${shaftName} 내륜 / 외륜`;$('#part-rpm').innerHTML=bearing?`${fmt(bearing.inner)} / ${fmt(bearing.outer)} <small>rpm · 예시</small>`:'축별로 회전';}
     else {$('#part-motion-label').textContent=belt?'벨트 선속도':stationary?'구성 역할':'부품 회전수';$('#part-rpm').innerHTML=stationary?(part?.category==='lubrication'?'윤활·냉각 계통':['shift-clutches','pulley-pistons'].includes(id)?'복합 작동부':'고정 지지부'):`${fmt(belt?snapshot.beltSpeed:id==='planets'?snapshot.planetRpm:snapshot.partRpm?.[id],belt?2:0)} <small>${belt?'m/s':'rpm'}</small>`;}
   }
   for(const el of document.querySelectorAll('[data-part]'))el.querySelector('.part-status')?.classList.toggle('transmitting',snapshot.activeParts?.includes(el.dataset.part));
@@ -217,6 +220,15 @@ function updateUI() {
   if($('#planetary-readouts'))$('#planetary-readouts').innerHTML=['at','ecvt'].includes(type)?['sun','carrier','ring'].map((key,i)=>`<span>${['태양기어','캐리어','링기어'][i]}<b>${fmt(snapshot[`${key}Rpm`])}<small>rpm</small></b></span>`).join(''):'';
 }
 function togglePause(value=!paused){paused=value;$('#toggle-pause').innerHTML=icon(paused?'play':'pause');$('#toggle-pause').setAttribute('aria-label',paused?'시뮬레이션 재생':'시뮬레이션 일시정지');updateUI();}
+
+function updateComponentDetails() {
+  const target = $('#component-details'); if (!target) return;
+  const id = $('#part-rpm')?.dataset.part || selectedPart || 'engine';
+  const bearing = id === 'bearings' ? scene?.getBearingDiagnostics()[0] : null;
+  const detail = componentReadouts(snapshot, id, bearing);
+  const html = `<h4>작동 상세</h4><dl>${detail.rows.map(row => `<div><dt>${esc(row.label)}</dt><dd>${fmt(row.value,row.digits)} <small>${esc(row.unit)}</small></dd></div>`).join('')}</dl><p>${esc(detail.note)}</p>`;
+  if (target.innerHTML !== html) target.innerHTML = html;
+}
 function reset(){sequence=null;simulator.reset();snapshot=simulator.snapshot();trace=[];lastSample=-1;updateUI();drawChart();}
 function startExperiment(){
   const original=simulator.settings;reset();
@@ -306,6 +318,8 @@ document.addEventListener('click',event=>{
   if(b.dataset.speed){view.speed=Number(b.dataset.speed);document.querySelectorAll('[data-speed]').forEach(x=>x.classList.toggle('active',x===b));persist();}
   if(b.dataset.housingMode){view.housingMode=b.dataset.housingMode;syncInputs();persist();}
   if(b.dataset.part)selectPart(b.dataset.part);
+  if(b.id==='focus-part') { const id=$('#part-rpm')?.dataset.part; if(!scene?.focusPart(id))toast('표시 중인 부품을 선택해 주세요.'); }
+  if(b.id==='unfocus-part')setCamera('isometric');
   if(b.dataset.partFilter){partFilter=b.dataset.partFilter;view.focusCategory=partFilter;selectedPart=null;view.selectedPart=null;scene?.selectPart(null);renderInspector();updateUI();}
   if(b.dataset.inspector){inspectorTab=b.dataset.inspector;renderInspector();}
   if(b.dataset.lesson){lessonIndex=Number(b.dataset.lesson);renderInspector();}
@@ -326,13 +340,22 @@ $('#project-file').onchange=async event=>{try{const file=event.target.files?.[0]
 $('#modal').addEventListener('click',e=>{if(e.target===$('#modal')){const b=$('#modal').getBoundingClientRect();if(e.clientX<b.left||e.clientX>b.right||e.clientY<b.top||e.clientY>b.bottom)$('#modal').close();}});
 document.addEventListener('keydown',e=>{if($('#modal').open)return;if(e.key==='Escape'&&focused){e.preventDefault();toggleFocus(false);return;}if(e.target.matches('input,textarea,select')||e.ctrlKey||e.metaKey||e.altKey)return;if(e.code==='KeyF'){e.preventDefault();toggleFocus();}if(e.code==='Space'){e.preventDefault();togglePause();}if(e.key==='ArrowUp'||e.key==='ArrowDown'){e.preventDefault();const gears=TRANSMISSIONS[type].gears.filter(g=>!['N','R'].includes(g.id));const index=gears.findIndex(g=>g.id===simulator.settings.gear);const next=gears[Math.max(0,Math.min(gears.length-1,index+(e.key==='ArrowUp'?1:-1)))];if(next)setSettings({gear:next.id});}});
 native?.onCommand(command);native?.onSaveResult(result=>{if(result.path)toast('파일을 저장했습니다.');else if(result.error)toast(result.error);else if(result.canceled)toast('파일 저장을 취소했습니다.');});
+let externalClock = false;
+window.render_game_to_text = () => JSON.stringify({ coordinates: 'X: shaft axis, Y: up, Z: toward front; RPM about local shaft axis; display slowed independently', type, paused, settings:simulator.settings, time:snapshot.time, outputRpm:snapshot.outputRpm, outputTorque:snapshot.outputTorque, lossPowerKW:snapshot.lossPowerKW, detail:snapshot.detail, selectedPart, focusedPart:scene?.getDiagnostics().focusedPart });
+window.advanceTime = ms => {
+  if (!Number.isFinite(ms) || ms < 0) return;
+  externalClock = true;
+  let remaining = Math.min(ms / 1000, 60);
+  while (remaining > 1e-9) { const dt=Math.min(remaining,0.05); if(!paused)advance(dt); scene?.update(snapshot,view,paused?0:dt); remaining-=dt; }
+  updateUI();
+};
 $('.brand').onclick=e=>{e.preventDefault();scene?.resetCamera();};
 window.transmissionLab={getState:()=>({settings:{...simulator.settings},view:{...view},snapshot:{...snapshot},paused,comparisons:comparisons.length,experiment:latestExperiment?structuredClone(latestExperiment):null,focused,sequence:!!sequence,scene:scene?.getDiagnostics()}),setSettings,selectType,reset,pause:()=>togglePause(true),play:()=>togglePause(false),selectPart,project,loadProject,scene,runExperiment:startExperiment,advance,recordComparison,persistNow,showComparisons,toggleFocus};
 renderControls();renderExperimentResult();
 if(matchMedia('(min-width:1061px) and (max-height:900px)').matches){$('.chart-panel').classList.add('is-collapsed');$('#toggle-chart').setAttribute('aria-expanded','false');$('#toggle-chart').textContent='그래프 펼치기';}
 if(storageState.recovery||storageState.error)toast('이전 저장 내용을 자동으로 열지 못했습니다. 저장 복구와 프로젝트 저장을 이용해 주세요.');
 if(stored?.legacy)toast('이전 형식의 비교 조건을 복원했습니다. 재계산 결과로 표시됩니다.');
-function frame(timestamp){const dt=lastTimestamp?Math.max(0,(timestamp-lastTimestamp)/1000):0;lastTimestamp=timestamp;if(!paused&&!document.hidden)advance(dt);scene?.update(snapshot,view,paused||document.hidden?0:Math.min(dt,1));if(timestamp-lastUI>100){updateUI();lastUI=timestamp;}requestAnimationFrame(frame);}
+function frame(timestamp){const dt=lastTimestamp?Math.max(0,(timestamp-lastTimestamp)/1000):0;lastTimestamp=timestamp;if(!externalClock&&!paused&&!document.hidden)advance(dt);scene?.update(snapshot,view,externalClock||paused||document.hidden?0:Math.min(dt,1));if(timestamp-lastUI>100){updateUI();lastUI=timestamp;}requestAnimationFrame(frame);}
 requestAnimationFrame(frame);
 document.addEventListener('visibilitychange',()=>{lastTimestamp=0;});
 window.addEventListener('beforeunload',()=>{persistNow();scene?.dispose();});

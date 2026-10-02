@@ -431,11 +431,117 @@ function ancillaryAnatomy(s, settings) {
   return s;
 }
 
+// These are derived observations of the controlled-speed model, not additional
+// dynamics. In particular, heat is a power rate, not a solved temperature.
+function mechanicalDetail(s, settings) {
+  const nearZero = value => Math.abs(value) < 1e-10 ? 0 : value;
+  const detail = {
+    couplings: [], powerPaths: [], mesh: [], belt: null, idealPlanetaryTorques: null,
+    outputLoadTorqueNm: nearZero(-s.outputTorque),
+    powerBalanceResidualKW: nearZero(s.inputPowerKW - s.outputPowerKW - s.lossPowerKW),
+    slipLossKW: s.clutchLossKW,
+    mechanicalLossKW: s.gearLossKW,
+    electricalLossKW: s.electricalLossKW ?? 0,
+    temperatureSolved: false,
+  };
+  const coupling = (id, label, inputRpm, outputRpm, transmittedTorqueNm, engagement, locked = false) => {
+    const slipRpm = nearZero(inputRpm - outputRpm);
+    const entry = {
+      id, label, inputRpm, outputRpm, slipRpm, transmittedTorqueNm, engagement,
+      heatKW: nearZero(rpmPower(transmittedTorqueNm, slipRpm)),
+      state: engagement <= 1e-12 ? 'open' : locked ? 'locked' : Math.abs(slipRpm) > 1e-9 ? 'slipping' : 'synchronous',
+    };
+    detail.couplings.push(entry);
+    return entry;
+  };
+  const path = (id, label, inputPowerKW, outputPowerKW, torqueNm) => {
+    detail.powerPaths.push({ id, label, inputPowerKW, outputPowerKW, torqueNm, lossPowerKW: nearZero(inputPowerKW - outputPowerKW) });
+  };
+  const mesh = (id, label, partIds, teeth, relativeInputRpm, loaded) => {
+    detail.mesh.push({ id, label, partIds, teeth, relativeInputRpm, frequencyHz: Math.abs(relativeInputRpm) * teeth / 60, loaded });
+  };
+
+  if (s.type === 'mt') {
+    coupling('clutch', '단일 클러치', s.inputRpm, s.partRpm['input-shaft'], s.inputTorque, settings.clutch, settings.clutch === 1);
+    path('manual', '선택 기어 경로', s.inputPowerKW, s.outputPowerKW, s.inputTorque);
+  } else if (s.type === 'dct') {
+    for (const bank of ['a', 'b']) {
+      const engagement = bank === 'a' ? s.clutchA : s.clutchB;
+      const selectedGear = bank === 'a' ? s.selectedA : s.selectedB;
+      const torqueNm = settings.torque * engagement;
+      const shaftRpm = s.partRpm[`shaft-${bank}`];
+      const locked = engagement === 1 && Math.abs(s.inputRpm - shaftRpm) < 1e-9;
+      coupling(`clutch-${bank}`, `클러치 ${bank.toUpperCase()}`, s.inputRpm, shaftRpm, torqueNm, engagement, locked);
+      path(`shaft-${bank}`, `${bank.toUpperCase()} ${selectedGear ? `${selectedGear === 'R' ? '후진' : `${selectedGear}단`}` : '분리'} 경로`, rpmPower(torqueNm, s.inputRpm), rpmPower(torqueNm, shaftRpm) * settings.efficiency, torqueNm);
+    }
+  } else if (s.type === 'cvt') {
+    const connected = s.gear !== 'N';
+    // Direction selection is downstream of this equivalent start coupling.
+    // Comparing engine RPM with a reversed primary pulley would invent slip.
+    coupling('reverse-unit', '전·후진 선택부 등가 결합', s.inputRpm, Math.abs(s.partRpm.primary), s.inputTorque, connected ? settings.clutch : 0, connected && settings.clutch === 1);
+    path('belt', '풀리·벨트 경로', s.inputPowerKW, s.outputPowerKW, s.inputTorque);
+    const angle = Math.asin((s.secondaryRadius - s.primaryRadius) / CVT_GEOMETRY.centerDistance);
+    const tangentialForceN = (s.gear === 'R' ? -1 : 1) * s.inputTorque / s.primaryRadius;
+    detail.belt = {
+      primaryWrapDeg: (Math.PI - 2 * angle) * 180 / Math.PI,
+      secondaryWrapDeg: (Math.PI + 2 * angle) * 180 / Math.PI,
+      tangentLengthM: Math.sqrt(CVT_GEOMETRY.centerDistance ** 2 - (s.secondaryRadius - s.primaryRadius) ** 2),
+      circulationHz: Math.abs(s.beltSpeed) / CVT_GEOMETRY.beltLength,
+      tangentialForceN,
+      primaryTorqueNm: tangentialForceN * s.primaryRadius,
+      idealSecondaryTorqueNm: tangentialForceN * s.secondaryRadius,
+      contactSpeedResidualMps: nearZero(s.partRpm.primary * TAU / 60 * s.primaryRadius - s.partRpm.secondary * TAU / 60 * s.secondaryRadius),
+      tensionSolved: false, tractionLimitSolved: false,
+    };
+  } else if (s.type === 'at') {
+    coupling('converter', '컨버터·잠금', s.inputRpm, s.turbineRpm, s.inputTorque, s.gear === 'N' ? 0 : 1, s.converterLocked);
+    path('planetary', '컨버터·유성 경로', s.inputPowerKW, s.outputPowerKW, s.inputTorque);
+  } else {
+    // Signed stage balances also work while generating or backdriving. These
+    // powers are connected stages, so their input/output columns are not totals.
+    path('mg1', 'MG1 기계 → 전기', s.mg1PowerKW, s.mg1ElectricalPowerKW, -s.mg1Torque);
+    path('mg2', 'MG2 전기 → 기계', s.mg2ElectricalPowerKW, s.mg2PowerKW, settings.mg2Torque);
+    path('ring', '링 합성 → 출력', s.enginePowerKW - s.mg1PowerKW + s.mg2PowerKW, s.outputPowerKW, s.engineRingTorque + settings.mg2Torque);
+  }
+
+  if (s.type === 'mt' || s.type === 'dct') {
+    for (const [gear, [inputTeeth]] of Object.entries(GEAR_TEETH)) {
+      const loaded = s.type === 'mt'
+        ? s.gear === gear && Math.abs(s.inputTorque) > 1e-9
+        : (s.selectedA === gear && settings.torque * s.clutchA > 1e-9) || (s.selectedB === gear && settings.torque * s.clutchB > 1e-9);
+      mesh(`gear-${gear}`, `${gear === 'R' ? '후진' : `${gear}단`} 맞물림`, [`gear-${gear}`, ...(gear === 'R' ? ['reverse-idler'] : [])], inputTeeth, s.partRpm[`gear-${gear}-input`], loaded);
+    }
+  } else if (s.type === 'at' || s.type === 'ecvt') {
+    const { sun: ns, ring: nr } = PLANETARY_TEETH;
+    const loaded = Math.abs(s.inputTorque) > 1e-9;
+    mesh('sun-planets', '선기어·플래닛 맞물림', ['sun', 'planets', 'carrier'], ns, s.sunRpm - s.carrierRpm, loaded);
+    mesh('ring-planets', '링기어·플래닛 맞물림', ['ring', 'planets', 'carrier'], nr, s.ringRpm - s.carrierRpm, loaded);
+    // External torques ON the ideal planetary unit. Its friction is accounted
+    // for by the existing lumped efficiency downstream, not these reactions.
+    // Locked direct drive does not determine an internal tooth-load split.
+    if (s.type === 'ecvt' || s.heldElement) {
+      const coefficients = { sun: ns, ring: nr, carrier: -(ns + nr) };
+      const input = s.type === 'ecvt' ? 'carrier' : s.activePorts.input;
+      const scale = s.inputTorque / coefficients[input];
+      const torques = Object.fromEntries(Object.entries(coefficients).map(([id, value]) => [id, value * scale]));
+      const holdingElement = s.heldElement ?? null;
+      detail.idealPlanetaryTorques = {
+        ...torques, holdingElement, holdingTorqueNm: holdingElement ? torques[holdingElement] : 0,
+        holdingPowerKW: holdingElement ? nearZero(rpmPower(torques[holdingElement], s.partRpm[holdingElement])) : 0,
+        torqueBalanceResidualNm: nearZero(torques.sun + torques.ring + torques.carrier),
+        powerBalanceResidualKW: nearZero(rpmPower(torques.sun, s.sunRpm) + rpmPower(torques.ring, s.ringRpm) + rpmPower(torques.carrier, s.carrierRpm)),
+      };
+    }
+  }
+  s.detail = detail;
+  return s;
+}
+
 export function createSimulator(initialSettings = {}) {
   let settings = normalizeSettings(initialSettings);
   let time = 0;
   let transition = null;
-  const evaluate = () => ancillaryAnatomy(({ mt: manual, dct: dualClutch, cvt: variablePulley, at: automaticPlanetary, ecvt: powerSplit })[settings.type](settings, time, transition), settings);
+  const evaluate = () => mechanicalDetail(ancillaryAnatomy(({ mt: manual, dct: dualClutch, cvt: variablePulley, at: automaticPlanetary, ecvt: powerSplit })[settings.type](settings, time, transition), settings), settings);
   return {
     get settings() { return { ...settings }; },
     setSettings(partial = {}) {
