@@ -187,6 +187,13 @@ try {
  await check('Saved comparison table and CSV download',async()=>{
   await page.locator('#record').click();assert.equal(await page.locator('tbody tr').count(),6);
   const download=page.waitForEvent('download');await page.locator('#export-csv').click();await(await download).saveAs(path.join(output,'comparison.csv'));await page.locator('#close-modal').click();
+  const imported=await page.evaluate(()=>window.transmissionLab.project());
+  imported.comparisons[0].appVersion='=1+2';
+  await page.evaluate(project=>{window.transmissionLab.loadProject(JSON.stringify(project));window.transmissionLab.showComparisons();},imported);
+  const guarded=page.waitForEvent('download');await page.locator('#export-csv').click();
+  const guardedPath=path.join(output,'comparison-guarded.csv');await(await guarded).saveAs(guardedPath);
+  assert.match(await fs.readFile(guardedPath,'utf8'),/"\t=1\+2"/);
+  await page.locator('#close-modal').click();
  });
  await check('PNG exports actual rendered canvas',async()=>{
   const download=page.waitForEvent('download');await page.locator('#capture').click();const d=await download;const target=path.join(output,'capture.png');await d.saveAs(target);assert.ok((await fs.stat(target)).size>20000);
