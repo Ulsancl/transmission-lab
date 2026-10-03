@@ -1,9 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSimulator, defaultSettings } from '../src/model.js';
-import { captureComparison, createProject, readProject } from '../src/project.js';
+import { captureComparison, createProject, readProject, csvCell } from '../src/project.js';
 import { advanceClock } from '../src/clock.js';
 import { createProjectStorage, STORAGE_KEY, LEGACY_KEY } from '../src/storage.js';
+
+test('CSV treats imported project strings as text instead of spreadsheet formulas', () => {
+  const formulas = ['=1+2', '+SUM(1,2)', '-1+2', '@SUM(1,2)', '  =1+2', '\t=1+2', '\n=1+2', '＝1+2'];
+  for (const value of formulas) assert.match(csvCell(value), /^"\t/);
+  assert.equal(csvCell('1.4.0'), '"1.4.0"');
+  assert.equal(csvCell(-5), '"-5"');
+  assert.equal(csvCell('safe","=1+2'), '"safe"",""=1+2"');
+});
 
 test('captured DCT handover results survive file and automatic storage round trips exactly', () => {
   const simulator = createSimulator(defaultSettings('dct'));

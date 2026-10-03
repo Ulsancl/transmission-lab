@@ -167,6 +167,7 @@ else {
     // All application content ships in the installer, including the first launch.
     session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, callback) => callback({ cancel: true }));
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    session.defaultSession.setPermissionCheckHandler(() => false);
     session.defaultSession.on('will-download', (_event, item, contents) => {
       if (!mainWindow || contents !== mainWindow.webContents) { item.cancel(); return; }
       downloads.add(item);

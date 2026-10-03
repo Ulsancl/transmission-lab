@@ -6,6 +6,14 @@ const validType = type => Object.hasOwn(TRANSMISSIONS, type);
 const copy = value => JSON.parse(JSON.stringify(value));
 const metrics = ['time', 'inputRpm', 'outputRpm', 'ratio', 'inputTorque', 'outputTorque', 'inputPowerKW', 'outputPowerKW', 'lossPowerKW'];
 
+export function csvCell(value) {
+  const text = String(value).replace(/[\u0000-\u001f\u007f]/g, ' ');
+  // Imported project text must stay data when a spreadsheet opens the CSV.
+  const safe = typeof value === 'string' && /^[\s]*[=+\-@\uff1d\uff0b\uff0d\uff20]/u.test(text)
+    ? `\t${text.trimStart()}` : text;
+  return `"${safe.replaceAll('"', '""')}"`;
+}
+
 function finiteTree(value, depth = 0) {
   if (depth > 8) return false;
   if (typeof value === 'number') return Number.isFinite(value);
