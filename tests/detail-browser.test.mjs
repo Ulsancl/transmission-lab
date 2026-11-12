@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -7,7 +8,7 @@ import { createServer } from 'vite';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
-const output = path.join(root, 'output', 'detail-v1.4.0');
+const output = artifactDirectory(root, path.join(root, 'output', 'detail-v1.4.0'));
 const url = 'http://127.0.0.1:5241';
 const checks = [], errors = [], evidence = [];
 let server, browser, page;

@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
 import {mkdir,writeFile,readFile} from 'node:fs/promises';
@@ -6,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import * as THREE from 'three';
 import {createMachinedGear} from '../src/geometry/gears.js';
-const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),version=JSON.parse(await readFile(path.join(root,'package.json'),'utf8')).version,output=path.join(root,'output',`scene-product-v${version}`);await mkdir(output,{recursive:true});
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),version=JSON.parse(await readFile(path.join(root,'package.json'),'utf8')).version,output=artifactDirectory(root, path.join(root,'output',`scene-product-v${version}`));await mkdir(output,{recursive:true});
 let server;
 let browser;const checks=[],records=[],errors=[];
 const check=async(name,fn)=>{await fn();checks.push(name);console.log('PASS '+name);};

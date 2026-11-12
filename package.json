@@ -12,7 +12,7 @@
     "prebuild": "node scripts/clean-dist.mjs",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "node --test tests/model.test.mjs tests/geometry.test.mjs tests/project.test.mjs tests/detail-model.test.mjs tests/gear-detail.test.mjs tests/mechanical-motion.test.mjs tests/window-state.test.mjs",
+    "test": "node --test tests/model.test.mjs tests/geometry.test.mjs tests/project.test.mjs tests/detail-model.test.mjs tests/gear-detail.test.mjs tests/mechanical-motion.test.mjs tests/window-state.test.mjs tests/safe-files.test.mjs",
     "test:browser": "node tests/browser.test.mjs",
     "test:consumer": "node tests/consumer.test.mjs",
     "test:scene-product": "node tests/scene-product.test.mjs",
