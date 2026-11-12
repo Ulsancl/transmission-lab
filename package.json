@@ -12,7 +12,7 @@
     "prebuild": "node scripts/clean-dist.mjs",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "node --test tests/model.test.mjs tests/geometry.test.mjs tests/project.test.mjs tests/detail-model.test.mjs tests/gear-detail.test.mjs tests/mechanical-motion.test.mjs",
+    "test": "node --test tests/model.test.mjs tests/geometry.test.mjs tests/project.test.mjs tests/detail-model.test.mjs tests/gear-detail.test.mjs tests/mechanical-motion.test.mjs tests/window-state.test.mjs",
     "test:browser": "node tests/browser.test.mjs",
     "test:consumer": "node tests/consumer.test.mjs",
     "test:scene-product": "node tests/scene-product.test.mjs",
@@ -22,11 +22,16 @@
     "desktop": "node scripts/desktop.mjs start",
     "package:desktop": "node scripts/desktop.mjs package"
   },
-  "dependencies": { "three": "^0.180.0" },
+  "dependencies": {
+    "three": "^0.180.0"
+  },
   "devDependencies": {
-    "electron": "44.5.1",
+    "electron": "44.11.1",
     "electron-builder": "26.15.3",
     "playwright": "^1.55.1",
-    "vite": "^7.1.7"
+    "vite": "^7.3.8"
+  },
+  "overrides": {
+    "minimatch@>=7 <11.0.1": "^11.0.8"
   }
 }
