@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -10,7 +11,7 @@ const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const expectedVersion = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8')).version;
 const anatomyKeys = ['bearings', 'clutches', 'lubrication', 'oilFlow'];
-const output = path.join(root, 'output', `${process.env.TRANSMISSION_DESKTOP_EXE ? 'desktop-packaged' : 'desktop'}-v${expectedVersion}`);
+const output = artifactDirectory(root, path.join(root, 'output', `${process.env.TRANSMISSION_DESKTOP_EXE ? 'desktop-packaged' : 'desktop'}-v${expectedVersion}`));
 await fs.mkdir(output, { recursive: true });
 const profile = await fs.mkdtemp(path.join(output, 'profile-'));
 const executablePath = process.env.TRANSMISSION_DESKTOP_EXE || require('electron');

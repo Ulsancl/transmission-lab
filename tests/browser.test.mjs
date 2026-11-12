@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import { chromium } from 'playwright';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -13,7 +14,7 @@ if(!process.env.TRANSMISSION_TEST_URL){
  await server.listen();
 }
 const version=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8')).version;
-const output=path.resolve(`output/qa-v${version}`);await fs.mkdir(output,{recursive:true});
+const output = artifactDirectory(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), path.resolve(`output/qa-v${version}`));await fs.mkdir(output,{recursive:true});
 const browser=await chromium.launch({headless:true});
 const context=await browser.newContext({viewport:process.env.CI==='true'?{width:1366,height:768}:{width:1600,height:1100},deviceScaleFactor:1,acceptDownloads:true});
 const page=await context.newPage(),errors=[];

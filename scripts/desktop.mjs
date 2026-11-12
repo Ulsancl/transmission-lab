@@ -1,3 +1,4 @@
+import { checkedPath, readInput, copyInput, stagingDirectory, publishDirectory, writeArtifact, checkTree } from './safe-files.mjs';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,6 +20,7 @@ function run(executable, args) {
   });
 }
 // The locally resolved runtime is copied directly into the installer; no extraction rename is needed.
+for (const input of ['src', 'public', 'desktop', 'docs', 'node_modules/electron']) checkTree(root, path.join(root, input));
 const electronPackage = path.dirname(require.resolve('electron/package.json'));
 await run(process.execPath, [path.join(electronPackage, 'install.js')]);
 await run(process.execPath, [path.join(root, 'scripts', 'clean-dist.mjs')]);
@@ -26,9 +28,24 @@ await run(process.execPath, [path.join(path.dirname(require.resolve('vite/packag
 if (mode === 'start') await run(require('electron'), [root]);
 else if (mode === 'package') {
   const runtime = path.join(electronPackage, 'dist');
-  await run(process.execPath, [path.join(path.dirname(require.resolve('electron-builder/package.json')), 'cli.js'), '--win', 'nsis', '--x64', '--publish', 'never', '--config', 'electron-builder.json', `--config.electronDist=${runtime}`]);
-  const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const stage = stagingDirectory(root), app = path.join(stage, 'app'), output = path.join(stage, 'windows');
+  const configuration = JSON.parse(readInput(root, path.join(root, 'electron-builder.json')));
+  const packageInfo = JSON.parse(readInput(root, path.join(root, 'package.json')));
+  try {
+    const inputs = [...new Set(['desktop', 'dist', 'package.json', ...configuration.extraResources.map(item => item.from)])];
+    for (const input of inputs.filter(file => !inputs.some(parent => file !== parent && file.startsWith(parent + '/')))) {
+      copyInput(root, path.join(root, input), path.join(app, input));
+    }
+    for (const dependency of Object.keys(packageInfo.dependencies || {})) {
+      copyInput(root, path.join(root, 'node_modules', dependency), path.join(app, 'node_modules', dependency));
+    }
+    const electronDist = checkedPath(root, path.join(root, 'node_modules', 'electron', 'dist'));
+    checkTree(root, electronDist);
+    await run(process.execPath, [path.join(path.dirname(require.resolve('electron-builder/package.json')), 'cli.js'), '--win', 'nsis', '--x64', '--config', path.join(root, 'electron-builder.json'), `--config.electronDist=${runtime}`, '--projectDir', app, `--config.electronDist=${electronDist}`, `--config.directories.output=${output}`, '--config.npmRebuild=false', '--publish', 'never']);
+    publishDirectory(root, output, path.join(root, 'release', 'windows'));
+  } finally { fs.rmSync(stage, { recursive: true, force: true }); }
+  const { version } = packageInfo;
   const file = path.join(root, 'release', 'windows', `Transmission-Lab-Setup-${version}.exe`);
-  fs.writeFileSync(file + '.sha256', `${createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  ${path.basename(file)}\n`);
+  writeArtifact(root, file + '.sha256', `${createHash('sha256').update(readInput(root, file)).digest('hex')}  ${path.basename(file)}\n`);
   console.log(`Installer: ${file}`);
 }

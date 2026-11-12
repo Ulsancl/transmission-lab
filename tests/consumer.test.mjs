@@ -1,3 +1,4 @@
+import { artifactDirectory } from '../scripts/safe-files.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -7,7 +8,7 @@ import { chromium } from 'playwright';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { version } = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
-const output = path.join(root, 'output', `consumer-v${version}`);
+const output = artifactDirectory(root, path.join(root, 'output', `consumer-v${version}`));
 const url = process.env.TRANSMISSION_CONSUMER_URL || 'http://127.0.0.1:5181';
 await fs.mkdir(output, { recursive: true });
 const errors = [], results = [], evidence = {};
