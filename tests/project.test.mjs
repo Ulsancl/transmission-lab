@@ -53,6 +53,17 @@ test('old settings and unreadable raw storage are preserved without silently ove
   assert.equal(broken.load().recovery.raw, '{broken'); assert.equal(values.get(`${STORAGE_KEY}.recovery`), '{broken');
   broken.save(createProject({ settings: defaultSettings('dct'), view: {} })); assert.equal(values.get(`${STORAGE_KEY}.recovery`), '{broken');
 });
+test('denied browser storage access does not prevent manual projects', () => {
+  const manager = createProjectStorage(() => { throw new DOMException('Site storage unavailable', 'SecurityError'); }, readProject);
+  const state = manager.load();
+  assert.equal(state.data, null);
+  assert.equal(state.blocked, true);
+  assert.equal(state.error, 'Site storage unavailable');
+  const project = createProject({ settings: defaultSettings('mt'), view: {} });
+  assert.equal(manager.save(project).ok, false);
+  assert.equal(readProject(JSON.stringify(project)).settings.type, 'mt');
+});
+
 test('failed or conflicting recovery backup never permits overwriting original storage', () => {
   for (const fail of [true, false]) {
     const values = new Map([[STORAGE_KEY, '{broken'], [`${STORAGE_KEY}.recovery`, 'older recovery']]);

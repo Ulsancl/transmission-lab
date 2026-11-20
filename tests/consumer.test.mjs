@@ -240,6 +240,22 @@ try {
     }
   });
 
+  await check('An unavailable localStorage getter still allows project file export', async () => {
+    const deniedContext = await browser.newContext({ viewport: { width: 1366, height: 768 }, acceptDownloads: true });
+    try {
+      await deniedContext.addInitScript(() => Object.defineProperty(window, 'localStorage', {
+        get() { throw new DOMException('Site storage unavailable', 'SecurityError'); },
+      }));
+      const target = await deniedContext.newPage(); observe(target, 'storage-denied');
+      await target.goto(url); await ready(target);
+      assert.equal(await target.locator('#storage-status').evaluate(el => el.classList.contains('has-warning')), true);
+      await target.evaluate(() => window.transmissionLab.setSettings({ rpm: 3100 }));
+      const pending = target.waitForEvent('download'); await target.locator('#save-project').click();
+      const download = await pending, file = path.join(output, 'storage-denied-project.json'); await download.saveAs(file);
+      assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).settings.rpm, 3100);
+    } finally { await deniedContext.close(); }
+  });
+
   await check('Storage quota failure is visible while project file export remains available', async () => {
     const quotaContext = await browser.newContext({ viewport: { width: 1366, height: 768 }, acceptDownloads: true });
     try {

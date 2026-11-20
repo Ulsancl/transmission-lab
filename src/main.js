@@ -42,7 +42,7 @@ function normalizeView(value){
   return next;
 }
 let type='dct', view=defaultView();
-const storageManager=createProjectStorage(localStorage,readProject);
+const storageManager=createProjectStorage(() => window.localStorage,readProject);
 const storageState=storageManager.load();
 const stored=storageState.data;
 if(validType(stored?.settings?.type))type=stored.settings.type;
@@ -353,7 +353,12 @@ $('.brand').onclick=e=>{e.preventDefault();scene?.resetCamera();};
 window.transmissionLab={getState:()=>({settings:{...simulator.settings},view:{...view},snapshot:{...snapshot},paused,comparisons:comparisons.length,experiment:latestExperiment?structuredClone(latestExperiment):null,focused,sequence:!!sequence,scene:scene?.getDiagnostics()}),setSettings,selectType,reset,pause:()=>togglePause(true),play:()=>togglePause(false),selectPart,project,loadProject,scene,runExperiment:startExperiment,advance,recordComparison,persistNow,showComparisons,toggleFocus};
 renderControls();renderExperimentResult();
 if(matchMedia('(min-width:1061px) and (max-height:900px)').matches){$('.chart-panel').classList.add('is-collapsed');$('#toggle-chart').setAttribute('aria-expanded','false');$('#toggle-chart').textContent='그래프 펼치기';}
-if(storageState.recovery||storageState.error)toast('이전 저장 내용을 자동으로 열지 못했습니다. 저장 복구와 프로젝트 저장을 이용해 주세요.');
+if(storageState.error && !storageState.recovery) {
+  $('#storage-status').textContent='자동 저장 불가 · 프로젝트 파일로 저장';
+  $('#storage-status').classList.add('has-warning');
+  toast('브라우저 자동 저장을 사용할 수 없습니다. 작업은 프로젝트 파일로 저장해 주세요.');
+}
+if(storageState.recovery)toast('이전 저장 내용을 자동으로 열지 못했습니다. 저장 복구와 프로젝트 저장을 이용해 주세요.');
 if(stored?.legacy)toast('이전 형식의 비교 조건을 복원했습니다. 재계산 결과로 표시됩니다.');
 function frame(timestamp){const dt=lastTimestamp?Math.max(0,(timestamp-lastTimestamp)/1000):0;lastTimestamp=timestamp;if(!externalClock&&!paused&&!document.hidden)advance(dt);scene?.update(snapshot,view,externalClock||paused||document.hidden?0:Math.min(dt,1));if(timestamp-lastUI>100){updateUI();lastUI=timestamp;}requestAnimationFrame(frame);}
 requestAnimationFrame(frame);
