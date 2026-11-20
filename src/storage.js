@@ -1,10 +1,13 @@
 export const STORAGE_KEY = 'transmission-lab.v2';
 export const LEGACY_KEY = 'transmission-lab.v1';
 
-export function createProjectStorage(storage, decode) {
+export function createProjectStorage(storageOrGetter, decode) {
+  // Accessing window.localStorage itself can throw under browser privacy settings.
+  const getStorage = typeof storageOrGetter === 'function' ? storageOrGetter : () => storageOrGetter;
   let blocked = false, recovery = null;
   function load() {
     try {
+      const storage = getStorage();
       const current = storage.getItem(STORAGE_KEY), old = current === null ? storage.getItem(LEGACY_KEY) : null;
       const raw = current ?? old;
       if (!raw) return { data: null };
@@ -29,9 +32,11 @@ export function createProjectStorage(storage, decode) {
     } catch (error) { blocked = true; return { data: null, recovery, blocked, error: error.message }; }
   }
   function save(project) {
-    if (blocked) return { ok: false, reason: '이전 저장 내용을 보존하고 있습니다. 프로젝트 파일로 저장해 주세요.' };
+    if (blocked) return { ok: false, reason: recovery
+      ? '이전 저장 내용을 보존하고 있습니다. 프로젝트 파일로 저장해 주세요.'
+      : '자동 저장 공간을 사용할 수 없습니다. 프로젝트 파일로 저장해 주세요.' };
     try {
-      storage.setItem(STORAGE_KEY, JSON.stringify(project));
+      getStorage().setItem(STORAGE_KEY, JSON.stringify(project));
       return { ok: true };
     } catch { return { ok: false, reason: '자동 저장 공간을 사용할 수 없습니다. 프로젝트 파일로 저장해 주세요.' }; }
   }
