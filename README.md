@@ -30,7 +30,7 @@
 
 ## 설치와 시작
 
-[1.4.0 릴리스 페이지](https://github.com/Ulsancl/transmission-lab/releases/tag/v1.4.0)에서 `Transmission-Lab-Setup-1.4.0.exe`와 같은 이름의 `.sha256` 확인 파일을 함께 확인합니다. 소스에서 패키징하면 `release/windows/`에 생성됩니다.
+[1.4.1 릴리스 페이지](https://github.com/Ulsancl/transmission-lab/releases/tag/v1.4.1)에서 `Transmission-Lab-Setup-1.4.1.exe`와 같은 이름의 `.sha256` 확인 파일을 함께 확인합니다. 소스에서 패키징하면 `release/windows/`에 생성됩니다.
 
 설치 파일을 실행해 설치 위치를 선택하고 바탕화면 또는 시작 메뉴의 **Transmission Lab** 아이콘을 클릭합니다. 개인 사용자용 설치이므로 관리자 권한이 필요하지 않습니다. 실행 환경과 3D 라이브러리를 포함하며, 설치된 앱은 첫 실행부터 인터넷·Node.js·별도 서버 없이 사용합니다.
 

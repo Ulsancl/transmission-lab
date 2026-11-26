@@ -1,4 +1,4 @@
-Transmission Lab 1.3.0
+Transmission Lab 1.4.1
 자동차 변속기 해부 · 체험·실험 앱
 
 1. 시작과 구조 관찰

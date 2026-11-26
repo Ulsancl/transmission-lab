@@ -1,6 +1,6 @@
 {
   "name": "transmission-lab",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "type": "module",
   "description": "자동차 변속기를 해부하며 동력 흐름을 조절하는 3D 시뮬레이터",
