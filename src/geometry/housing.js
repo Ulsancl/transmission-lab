@@ -238,7 +238,9 @@ export function createGearboxHousing(type = 'mt', options = {}) {
   group.rotation.y = config.orientation;
   const cast = finish(options.color ?? 0x747c7f, 0.74, 0.66, 'grain cast aluminum gearbox shell', 0.025);
   const machine = finish(0xaeb5b7, 0.91, 0.34, 'machined aluminum assembly flange', 0.004);
-  const cut = finish(0xb1816c, 0.60, 0.56, 'saw-cut aluminum wall cross-section', 0.009);
+  const cut = finish(0xc79779, 0.47, 0.56, 'saw-cut aluminum wall cross-section', 0.009);
+  cut.emissive.setHex(0xf0a070);
+  cut.emissiveIntensity = 0.15;
   const steel = finish(0x81868b, 0.95, 0.32, 'zinc plated hex head fastener');
   const gasket = finish(0x343536, 0.04, 0.93, 'case split elastomer gasket');
   const wallThickness = 0.13, dynamic = [], angularDetails = [], covers = [], bearingSupports = [], bearingFits = [];

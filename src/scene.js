@@ -27,6 +27,8 @@ const NAMES = {
 for (let i = 1; i <= 6; i += 1) NAMES[`gear-${i}`] = `${i}단 기어 쌍`;
 
 const TAU = Math.PI * 2;
+const QUALITY_PIXEL_RATIO = { high: 1.7, balanced: 1.25, low: 1 };
+const MOBILE_PIXEL_RATIO_CAP = 1.25;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number.isFinite(v) ? v : lo));
 const point = (x, y, z) => new THREE.Vector3(x, y, z);
 const rpmPower = (torque, rpm) => torque * rpm * TAU / 60000;
@@ -230,7 +232,8 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   scene.fog = new THREE.Fog(0x07111b, 18, 42);
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
   const graphicsControl = renderer.getContext().getExtension('WEBGL_lose_context');
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.7));
+  const narrowViewport = window.matchMedia('(max-width: 720px)');
+  let showFullLabels = false;
   renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.06;
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.domElement.className = 'transmission-canvas'; renderer.domElement.setAttribute('aria-label', '변속기 구조 3D 보기. 드래그로 회전하고 부품을 클릭하세요.');
@@ -272,7 +275,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   let beltTrace = null, beltInstances = null, stationaryCuts = [], converterLockPiston = null, sumpWall = null;
   let bearingDetails = [];
   let focusedPart = null;
-  let type = 'mt', currentSnapshot = null, selected = null, pointerStart = null, lastPick = null, width = 1, height = 1, beltTravel = 0, lastFitExplode = -1, lastCategories = '';
+  let type = 'mt', currentSnapshot = null, selected = null, pointerStart = null, lastPick = null, width = 1, height = 1, pixelRatio = 0, beltTravel = 0, lastFitExplode = -1, lastCategories = '';
   const ownedMaterials = new Set();
   const selectionOutline = new THREE.Box3Helper(new THREE.Box3(), 0x9fdae7); selectionOutline.material.transparent = true; selectionOutline.material.opacity = 0.42; selectionOutline.visible = false; scene.add(selectionOutline);
 
@@ -290,7 +293,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     group.position.set(...position); assembly.add(group);
     const labelElement = document.createElement('button'); labelElement.type = 'button'; labelElement.dataset.part = id;
     labelElement.className = 'scene-part-label'; labelElement.textContent = NAMES[id] || id;
-    Object.assign(labelElement.style, { position: 'absolute', display: 'none', pointerEvents: 'auto', transform: 'translate(-50%, -50%)', font: '500 10px system-ui, sans-serif', color: '#c5d9e8', background: 'rgba(7,18,29,.84)', border: '1px solid rgba(102,147,179,.28)', borderRadius: '5px', padding: '4px 7px', whiteSpace: 'nowrap', cursor: 'pointer', backdropFilter: 'blur(8px)', boxShadow: '0 3px 12px #0004' });
+    Object.assign(labelElement.style, { position: 'absolute', display: 'none', pointerEvents: 'auto', transform: 'translate(-50%, -50%)', fontFamily: 'inherit', fontSize: '10px', fontWeight: '500', color: '#c5d9e8', background: 'rgba(7,18,29,.84)', border: '1px solid rgba(102,147,179,.28)', borderRadius: '5px', padding: '4px 7px', whiteSpace: 'nowrap', cursor: 'pointer', backdropFilter: 'blur(8px)', boxShadow: '0 3px 12px #0004' });
     labelElement.addEventListener('click', () => choosePart(id)); labelsLayer.appendChild(labelElement);
     labelElement.style.display = 'block';
     if (id.startsWith('gear-')) { labelElement.textContent = `${NAMES[id] || id} · 대기`; labelElement.style.minWidth = `${labelElement.getBoundingClientRect().width - 16}px`; labelElement.textContent = NAMES[id] || id; }
@@ -977,7 +980,6 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   }
 
   function configureQuality() {
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, { high: 1.7, balanced: 1.25, low: 1 }[effectiveQuality]));
     renderer.shadowMap.enabled = effectiveQuality !== 'low';
     const size = effectiveQuality === 'high' ? 1536 : 1024;
     if (keyLight.shadow.mapSize.x !== size) { keyLight.shadow.map?.dispose(); keyLight.shadow.map = null; keyLight.shadow.mapSize.set(size, size); keyLight.shadow.needsUpdate = true; }
@@ -1038,16 +1040,31 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     controls.target.copy(center); camera.position.copy(center).addScaledVector(direction, 8); fitCamera(); return true;
   }
 
+  function syncViewport(nextWidth = width, nextHeight = height) {
+    const cap = QUALITY_PIXEL_RATIO[effectiveQuality];
+    const nextRatio = Math.min(window.devicePixelRatio || 1, narrowViewport.matches ? MOBILE_PIXEL_RATIO_CAP : cap, cap);
+    const sizeChanged = nextWidth !== width || nextHeight !== height;
+    if (!sizeChanged && nextRatio === pixelRatio) return;
+
+    width = nextWidth; height = nextHeight; pixelRatio = nextRatio;
+    renderer.setDrawingBufferSize(width, height, pixelRatio);
+    if (sizeChanged) {
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      if (assembly.children.length) fitCamera();
+    }
+    invalidateRender();
+  }
+
   function resize() {
-    renderInvalidated = true;
-    const rect = container.getBoundingClientRect(); width = Math.max(1, rect.width); height = Math.max(1, rect.height);
-    renderer.setSize(width, height, false); camera.aspect = width / height; camera.updateProjectionMatrix();
-    if (assembly.children.length) fitCamera();
+    const { width: cssWidth, height: cssHeight } = container.getBoundingClientRect();
+    syncViewport(Math.max(1, cssWidth), Math.max(1, cssHeight));
   }
   const observer = new ResizeObserver(resize); observer.observe(container);
+  narrowViewport.addEventListener('change', invalidateRender);
 
   function fitCamera() {
-    assembly.updateWorldMatrix(true, true); controls.update();
+    assembly.updateWorldMatrix(true, true); controls.update(); camera.updateMatrixWorld();
     const focus = parts.get(focusedPart);
     if (focus && !focus.group.visible) focusedPart = null;
     const groups = focusedPart ? [focusedPart === 'bearings' ? bearingDetails[0].cage.parent : focus.group] : [...parts.values()].filter(p => p.group.visible).map(p => p.group);
@@ -1063,7 +1080,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       const depth = relative.dot(direction);
       distance = Math.max(distance, depth + Math.abs(relative.dot(right)) / (tangent * camera.aspect * 0.89), depth + Math.abs(relative.dot(up)) / (tangent * 0.83));
     }
-    camera.position.copy(direction).multiplyScalar(Math.min(38, distance)).add(controls.target); controls.update();
+    camera.position.copy(direction).multiplyScalar(Math.min(38, distance)).add(controls.target); controls.update(); camera.updateMatrixWorld();
   }
 
   function setCamera(preset = 'isometric') {
@@ -1138,7 +1155,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     const intersects = (a, b, padding = 0) => a.left < b.right + padding && a.right > b.left - padding && a.top < b.bottom + padding && a.bottom > b.top - padding;
     candidates.sort((a, b) => a.priority - b.priority || a.p.order - b.p.order);
     for (const { p, x: originalX, y: originalY, anchorX, anchorY, priority } of candidates) {
-      const labelWidth = Math.min(p.labelWidth, Math.max(16, width - 16)), labelHeight = p.labelHeight;
+      const labelWidth = Math.min(p.labelWidth, Math.max(16, width - 16)), labelHeight = narrowViewport.matches ? 34 : p.labelHeight;
       const xMin = 8 + labelWidth / 2, xMax = width - xMin, yMin = 8 + labelHeight / 2, yMax = height - yMin;
       if (xMax < xMin || yMax < yMin) { suppressed.push(p.id); continue; }
       const x = clamp(originalX, xMin, xMax), y = clamp(originalY, yMin, yMax), slots = [];
@@ -1186,7 +1203,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     }
     for (const label of labelLayout.visible) {
       const p = parts.get(label.id), style = getComputedStyle(p.labelElement); ctx.fillStyle = style.backgroundColor; ctx.strokeStyle = style.borderColor; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.roundRect(label.left, label.top, label.width, label.height, 5); ctx.fill(); ctx.stroke(); ctx.font = style.font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = style.color;
+      ctx.beginPath(); ctx.roundRect(label.left, label.top, label.width, label.height, 5); ctx.fill(); ctx.stroke(); ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = style.color;
       ctx.save(); ctx.beginPath(); ctx.rect(label.left + 4, label.top, label.width - 8, label.height); ctx.clip(); ctx.fillText(p.labelElement.textContent, label.x, label.y); ctx.restore();
     }
     return canvas.toDataURL('image/png');
@@ -1208,6 +1225,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     lastUpdateView = view;
     const viewKey = JSON.stringify(view), cameraChanged = controls.update();
     if (contextLost) return;
+    syncViewport();
     if (dtSeconds <= 0 && !renderInvalidated && !cameraChanged && snapshot === lastRenderedSnapshot && viewKey === lastRenderedViewKey) { skippedIdleFrames += 1; return; }
     const dt = clamp(dtSeconds, 0, 1), speed = clamp(view.speed ?? 0.015, 0, 0.12), explode = clamp(view.explode ?? 0.06, 0, 1), housingAmount = clamp(view.housing ?? 1, 0, 1);
     for (const p of parts.values()) p.group.position.copy(p.base).addScaledVector(p.explode, explode);
@@ -1246,6 +1264,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     }
     const projected = new THREE.Vector3();
     const labelCandidates = [];
+    const compactLabels = narrowViewport.matches && !showFullLabels;
     for (const [id, p] of parts) {
       p.group.position.copy(p.base).addScaledVector(p.explode, explode);
       const isActive = active.has(id), isSelected = selected === id, isPreselected = preselected.has(id) && !isActive;
@@ -1253,8 +1272,8 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
         for (const mat of p.materials) {
           mat.color.copy(mat.userData.baseColor);
           if (!isActive && snapshot.gear !== 'N' && p.category === 'gears') mat.color.lerp(new THREE.Color(0x656c72), 0.1);
-          mat.emissive.setHex(isSelected ? 0xd4ebf0 : isActive ? 0xa9b9c1 : isPreselected ? C.purple : 0x000000);
-          mat.emissiveIntensity = mat.userData.surface === 'oil volume' ? 0 : isSelected ? 0.045 : isActive ? 0.015 : isPreselected ? 0.012 : 0;
+          mat.emissive.setHex(isSelected ? 0xccf2ff : isActive ? p.color : isPreselected ? C.purple : 0x000000);
+          mat.emissiveIntensity = mat.userData.surface === 'oil volume' ? 0 : isSelected ? 0.16 : isActive ? 0.10 : isPreselected ? 0.012 : 0;
         }
       }
       p.labelElement.style.borderColor = isSelected ? '#c1eeff' : isActive ? `#${new THREE.Color(p.color).getHexString()}77` : 'rgba(102,147,179,.28)';
@@ -1267,7 +1286,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       const focus = view.focusCategory || 'all';
       const exterior = ['housing', 'engine', 'input', 'output', 'cooler', 'inverter', 'battery'].includes(id);
       if (id === 'oil-lines') for (const object of p.group.children) if (object.isMesh && !oilRoutes.some(r => r.line === object)) object.visible = !closedOpaque;
-      const showAnnotation = isSelected || ((!closedOpaque || exterior) && (focus === 'all' ? p.label : p.category === focus));
+      const showAnnotation = isSelected || (!compactLabels && (!closedOpaque || exterior) && (focus === 'all' ? p.label : p.category === focus));
       if (view.labels !== false && showAnnotation && p.group.visible) {
         // Anchors live in the fixed assembly frame. The component's own spin
         // affects its mesh, never the position of its anatomy annotation.
@@ -1325,7 +1344,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   }
   renderer.domElement.addEventListener('pointerdown', pointerDown); renderer.domElement.addEventListener('pointerup', pointerUp);
   const graphicsMessage = document.createElement('div'); graphicsMessage.className = 'scene-graphics-recovery';
-  Object.assign(graphicsMessage.style, { position: 'absolute', inset: '0', zIndex: '10', display: 'none', placeContent: 'center', padding: '24px', textAlign: 'center', background: '#0d1b25ed', color: '#c5d9e8', font: '12px system-ui', lineHeight: '1.8' });
+  Object.assign(graphicsMessage.style, { position: 'absolute', inset: '0', zIndex: '10', display: 'none', placeContent: 'center', padding: '24px', textAlign: 'center', background: '#0d1b25ed', color: '#c5d9e8', fontSize: '12px', lineHeight: '1.8' });
   graphicsMessage.innerHTML = '<p>3D 화면을 다시 연결하는 중입니다.<br>실험 조건과 프로젝트는 유지됩니다.</p><button type="button" style="margin-top:14px;padding:9px 14px;border:1px solid #579b9b;border-radius:5px;background:#264d51;color:#d4f3ed">화면 다시 연결</button>'; container.appendChild(graphicsMessage);
   graphicsMessage.querySelector('button').onclick = () => { if (graphicsControl && renderer.getContext().isContextLost()) graphicsControl.restoreContext(); else window.location.reload(); };
   const onContextLost = event => { event.preventDefault(); contextLost = true; renderInvalidated = true; graphicsMessage.style.display = 'grid'; };
@@ -1341,6 +1360,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
 
   return {
     setType, update, selectPart, focusPart, resetCamera, setCamera, getBearingDiagnostics: bearingDiagnostics,
+    setFullLabels(value) { showFullLabels = value; invalidateRender(); },
     capture,
     getDiagnostics() {
       let meshCount = 0; assembly.traverse(o => { if (o.isMesh) meshCount += 1; });
@@ -1354,11 +1374,11 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
         oilPaths: oilRoutes.map(r => ({ visible: r.line.visible, animatedDrops: r.beads.filter(b => b.visible).length, color: `#${r.line.material.color.getHexString()}`, phase: r.progress, firstDrop: r.beads[0]?.position.toArray() })),
         powerPaths: powerTraces.map(trace => trace.diagnostics()),
         requestedQuality, effectiveQuality, performance: { frameMs, renderMs: lastRenderMs, renderFrames, skippedIdleFrames, triangles: renderer.info.render.triangles, drawCalls: renderer.info.render.calls, geometries: renderer.info.memory.geometries, visibleLabels: labelLayout.visible.length, suppressedLabels: labelLayout.suppressed.length, labelOverlaps: labelLayout.overlaps, ...batchStats },
-        annotations: labelLayout.visible.map(label => ({ ...label })), suppressedLabels: [...labelLayout.suppressed], contextLost,
+        annotations: labelLayout.visible.map(label => ({ ...label })), suppressedLabels: [...labelLayout.suppressed], contextLost, pixelRatio, cameraAspect: camera.aspect,
         meshCount, visibleLabels: entries.filter(p => p.labelElement.style.display !== 'none').length, rotors: rotors.length, rotorAngles: rotors.map(r => ({ key: r.key, axis: r.axis, angle: r.object.rotation[r.axis] })), cameraDistance: camera.position.distanceTo(controls.target), beltSegments: beltSegments.length, beltPhase: beltTravel, beltSamplePositions: beltSegments.filter((_,i)=>i===0||i===71).map(o=>o.position.toArray()), width, height, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries, snapshotType: currentSnapshot?.type || null, renderer: renderer.capabilities.isWebGL2 ? 'WebGL 2' : 'WebGL' };
     },
     dispose() {
-      observer.disconnect(); controls.removeEventListener('change', invalidateRender); controls.dispose(); renderer.domElement.removeEventListener('pointerdown', pointerDown); renderer.domElement.removeEventListener('pointerup', pointerUp);
+      observer.disconnect(); narrowViewport.removeEventListener('change', invalidateRender); controls.removeEventListener('change', invalidateRender); controls.dispose(); renderer.domElement.removeEventListener('pointerdown', pointerDown); renderer.domElement.removeEventListener('pointerup', pointerUp);
       renderer.domElement.removeEventListener('webglcontextlost', onContextLost); renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
       disposeAssembly(); floor.geometry.dispose(); floor.material.dispose(); grid.geometry.dispose(); grid.material.dispose(); selectionOutline.geometry.dispose(); selectionOutline.material.dispose(); environmentTarget.dispose(); renderer.dispose(); labelsLayer.remove(); graphicsMessage.remove(); renderer.domElement.remove();
     },

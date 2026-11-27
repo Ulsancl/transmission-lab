@@ -203,8 +203,71 @@ try {
   await page.evaluate(()=>window.transmissionLab.setSettings({rpm:2850}));await page.waitForTimeout(250);await page.reload();await page.waitForFunction(()=>window.transmissionLab);
   const s=await page.evaluate(()=>window.transmissionLab.getState());assert.equal(s.settings.type,'ecvt');assert.equal(s.settings.rpm,2850);
  });
- await check('Responsive mobile layout has no horizontal page overflow',async()=>{
-  await page.setViewportSize({width:390,height:844});await page.waitForTimeout(300);const sizes=await page.evaluate(()=>({page:document.documentElement.scrollWidth,viewport:innerWidth}));assert.ok(sizes.page<=sizes.viewport+1,JSON.stringify(sizes));await page.screenshot({path:path.join(output,'mobile.png'),fullPage:true});
+ await check('Mobile 3D resize, touch callouts and keyboard-accessible file actions', async () => {
+  const mobile = await browser.newPage({ viewport: { width: 500, height: 900 }, deviceScaleFactor: 3, hasTouch: true, acceptDownloads: true });
+  mobile.on('pageerror', error => errors.push(error.message));
+  mobile.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
+  try {
+   await mobile.goto(url);
+   await mobile.waitForFunction(() => window.transmissionLab?.getState().scene?.meshCount > 0);
+   await mobile.evaluate(() => window.transmissionLab.pause());
+   await mobile.locator('#quality').selectOption('high');
+   const checkViewport = async (viewport, pixelRatio) => {
+    await mobile.waitForFunction(({ viewport, pixelRatio }) => {
+     const scene = window.transmissionLab.getState().scene;
+     const canvas = document.querySelector('.transmission-canvas');
+     const { width, height } = canvas.getBoundingClientRect();
+     return innerWidth === viewport && scene.width === width && scene.height === height &&
+      scene.cameraAspect === width / height && scene.pixelRatio === pixelRatio &&
+      canvas.width === Math.floor(width * pixelRatio) && canvas.height === Math.floor(height * pixelRatio);
+    }, { viewport, pixelRatio });
+    const dimensions = await mobile.evaluate(() => ({
+     page: document.documentElement.scrollWidth, canvasHeight: document.querySelector('.transmission-canvas').getBoundingClientRect().height,
+    }));
+    assert.ok(dimensions.page <= viewport + 1, `Horizontal overflow at ${viewport}px`);
+    if (viewport <= 500) assert.ok(dimensions.canvasHeight >= 320);
+   };
+   await checkViewport(500, 1.25);
+   const labels = mobile.locator('.scene-part-label:visible');
+   const labelToggle = mobile.getByRole('button', { name: '부품 이름 모두 표시' });
+   assert.equal(await labels.count(), 0);
+   await labelToggle.tap();
+   await mobile.waitForFunction(() => window.transmissionLab.getState().scene.visibleLabels > 3);
+   await mobile.locator('.scene-part-label[data-part="engine"]').tap();
+   assert.equal(await mobile.evaluate(() => window.transmissionLab.getState().view.selectedPart), 'engine');
+   await labelToggle.press('Space');
+   await mobile.waitForFunction(() => window.transmissionLab.getState().scene.visibleLabels === 1);
+   assert.equal(await labels.first().getAttribute('data-part'), 'engine');
+   assert.equal(await labelToggle.getAttribute('aria-pressed'), 'false');
+   assert.equal(await mobile.evaluate(() => window.transmissionLab.getState().paused), true);
+   await mobile.locator('.scene-panel').screenshot({ path: path.join(output, 'mobile-500.png') });
+
+   const download = mobile.waitForEvent('download');
+   await mobile.getByRole('button', { name: '프로젝트 저장' }).press('Space');
+   const projectFile = path.join(output, 'mobile-project.json');
+   await (await download).saveAs(projectFile);
+   await mobile.locator('[data-type=mt]').tap();
+   const chooser = mobile.waitForEvent('filechooser');
+   await mobile.getByRole('button', { name: '프로젝트 열기' }).tap();
+   await (await chooser).setFiles(projectFile);
+   await mobile.waitForFunction(() => window.transmissionLab.getState().settings.type === 'dct');
+   await mobile.getByRole('button', { name: '사용 안내' }).press('Enter');
+   assert.equal(await mobile.getByRole('dialog').isVisible(), true);
+   await mobile.keyboard.press('Escape');
+   await mobile.locator('[data-type=cvt]').tap();
+   await mobile.getByRole('button', { name: '새 프로젝트' }).tap();
+   assert.equal(await mobile.evaluate(() => window.transmissionLab.getState().settings.type), 'dct');
+   await mobile.evaluate(() => window.transmissionLab.pause());
+   await mobile.locator('#quality').selectOption('high');
+
+   await mobile.setViewportSize({ width: 390, height: 844 });
+   await checkViewport(390, 1.25);
+   await mobile.screenshot({ path: path.join(output, 'mobile.png'), fullPage: true });
+   await mobile.setViewportSize({ width: 1366, height: 900 });
+   await checkViewport(1366, 1.7);
+   assert.equal(await labelToggle.isVisible(), false);
+   assert.ok(await labels.count() > 3);
+  } finally { await mobile.close(); }
  });
  assert.deepEqual(errors,[]);results.push({name:'No browser errors',passed:true});
  await fs.writeFile(path.join(output,'browser-results.json'),JSON.stringify({passed:results.length,results,errors},null,2));
