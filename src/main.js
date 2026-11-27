@@ -54,13 +54,20 @@ if(stored?.view)view=normalizeView(stored.view);
 let paused=false, snapshot=simulator.snapshot(), trace=[], comparisons=stored?.comparisons||[], latestExperiment=stored?.experiment||null, chartMetric='rpm', sequence=null, lastTimestamp=0, lastSample=-1, lastUI=0;
 let storageWarning='', focused=false;
 let lessonIndex=0, inspectorTab='parts', partFilter='all', persistTimer, toastTimer, selectedPart=null;
+let fullSceneLabels = false;
 const native=window.transmissionDesktop;
 
 $('#app').innerHTML=`
   <header class="app-header">
     <a class="brand" href="#" aria-label="Transmission Lab 홈"><span class="brand-icon">${icon('gear')}</span><span>TRANSMISSION <b>LAB</b><small>자동차 변속기 구조 실험실</small></span></a>
     <div class="header-center"><span class="status-dot"></span> INTERACTIVE MECHANICAL LAB <span class="version">01</span></div>
-    <div class="header-actions"><button id="recover-storage" class="subtle-button" hidden>저장 복구</button><button id="open-project" class="icon-button" title="프로젝트 열기" aria-label="프로젝트 열기">${icon('open')}</button><button id="save-project" class="subtle-button">${icon('save')}<span>프로젝트 저장</span></button><button id="help" class="icon-button" title="사용 안내" aria-label="사용 안내">${icon('help')}</button></div>
+    <div class="header-actions" role="group" aria-label="프로젝트 작업">
+      <button id="recover-storage" class="subtle-button" hidden>저장 복구</button>
+      <button id="new-project" class="icon-button" title="새 프로젝트" aria-label="새 프로젝트">${icon('plus')}</button>
+      <button id="open-project" class="icon-button" title="프로젝트 열기" aria-label="프로젝트 열기">${icon('open')}</button>
+      <button id="save-project" class="subtle-button" title="프로젝트 저장" aria-label="프로젝트 저장">${icon('save')}<span>프로젝트 저장</span></button>
+      <button id="help" class="icon-button" title="사용 안내" aria-label="사용 안내">${icon('help')}</button>
+    </div>
   </header>
   <nav class="transmission-tabs" aria-label="변속기 형식">${Object.entries(META).map(([id,m],i)=>`<button class="type-tab" data-type="${id}" aria-pressed="${id===type}"><span class="type-number">0${i+1}</span><span class="type-symbol">${m.tag}</span><span class="type-copy"><b>${m.title}</b><small>${m.sub}</small></span></button>`).join('')}</nav>
   <main class="workbench">
@@ -86,10 +93,10 @@ $('#app').innerHTML=`
       <section class="scene-panel panel" aria-label="변속기 3D 구조">
         <div class="scene-heading"><div><span class="eyebrow" id="scene-kicker">DUAL CLUTCH TRANSMISSION</span><h1 id="scene-title">다음 기어를 미리 준비하다</h1></div><span class="model-tag">대표 구조 / 원리 모델</span></div>
         <div class="scene-toolbar"><div class="segmented camera-presets" aria-label="카메라 방향"><button data-camera="isometric" class="active">입체</button><button data-camera="front">정면</button><button data-camera="top">위에서</button></div><div><button id="focus-scene" class="subtle-button" aria-pressed="false" title="크게 보기 (F)">크게 보기</button><button id="reset-camera" class="icon-button" aria-label="시점 초기화" title="시점 초기화">${icon('reset')}</button><button id="capture" class="icon-button" aria-label="3D 이미지 저장" title="3D 이미지 저장">${icon('camera')}</button></div></div>
-        <div class="scene-quick-tools"><div class="housing-modes" aria-label="빠른 케이스 관찰"><button data-housing-mode="cutaway">절개</button><button data-housing-mode="closed">외형</button><button data-housing-mode="hidden">내부만</button></div><label class="quick-explode">벌리기 <input data-view="explode" type="range" min="0" max="1" step="0.01" aria-label="빠른 부품 벌리기"></label><label class="quality-control">화질 <select id="quality" aria-label="화질"><option value="auto">자동</option><option value="high">정밀</option><option value="balanced">균형</option><option value="low">가볍게</option></select></label><button id="quick-experiment" class="subtle-button">자동 실험</button><button id="show-result" class="subtle-button" hidden>결과 보기</button></div>
+        <div class="scene-quick-tools"><div class="housing-modes" aria-label="빠른 케이스 관찰"><button data-housing-mode="cutaway">절개</button><button data-housing-mode="closed">외형</button><button data-housing-mode="hidden">내부만</button></div><label class="quick-explode">벌리기 <input data-view="explode" type="range" min="0" max="1" step="0.01" aria-label="빠른 부품 벌리기"></label><label class="quality-control">화질 <select id="quality" aria-label="화질"><option value="auto">자동</option><option value="high">정밀</option><option value="balanced">균형</option><option value="low">가볍게</option></select></label><button id="quick-experiment" class="subtle-button">자동 실험</button><button id="show-result" class="subtle-button" hidden>결과 보기</button><button id="scene-labels" class="subtle-button" type="button" aria-pressed="false" aria-controls="scene" aria-label="부품 이름 모두 표시">부품 이름</button></div>
         <div id="scene" class="scene-host"></div>
         <div class="scene-overlay"><span class="live-badge"><i></i><span id="operating-status">동력 전달 중</span></span><div id="clutch-indicator" class="clutch-indicator"></div></div>
-        <div class="scene-bottom"><span class="orbit-hint">드래그 회전 · 휠 확대 · 부품 클릭</span><div class="flow-legend"><span><i class="cyan"></i>입력</span><span><i class="amber"></i>출력</span><span id="electric-legend"><i class="green"></i>전기</span><span id="oil-legend"><i class="oil-color"></i>윤활</span></div></div>
+        <div class="scene-bottom"><span class="orbit-hint orbit-hint-desktop">드래그 회전 · 휠 확대 · 부품 클릭</span><span class="orbit-hint orbit-hint-mobile">드래그 회전 · 부품 탭으로 선택</span><div class="flow-legend"><span><i class="cyan"></i>입력</span><span><i class="amber"></i>출력</span><span id="electric-legend"><i class="green"></i>전기</span><span id="oil-legend"><i class="oil-color"></i>윤활</span></div></div>
         <div class="transport"><div class="transport-buttons"><button id="toggle-pause" class="play-button" aria-label="시뮬레이션 일시정지">${icon('pause')}</button><button id="reset" class="icon-button" title="실험 초기화" aria-label="실험 초기화">${icon('reset')}</button><span id="simulation-time">00:00.0</span></div><div class="speed-control"><span>회전 표시</span><button data-speed="0.0083333333">1/120</button><button data-speed="0.0166666667" class="active">1/60</button><button data-speed="0.0333333333">1/30</button></div><span class="transport-note">수치는 실제 회전수</span></div>
       </section>
       <section class="metrics" aria-label="계산 결과"><div class="metric"><span>입력 회전수</span><strong id="metric-input">1,800</strong><small>rpm</small><div class="metric-bar cyan-bar"></div></div><div class="metric"><span>출력 회전수</span><strong id="metric-output">—</strong><small>rpm</small><div class="metric-bar amber-bar"></div></div><div class="metric"><span id="ratio-label">기어 감속비</span><strong id="metric-ratio">—</strong><small id="ratio-unit">: 1</small><div class="metric-bar purple-bar"></div></div><div class="metric"><span>출력 토크</span><strong id="metric-torque">—</strong><small>N·m</small><div class="metric-bar green-bar"></div></div></section>
@@ -164,6 +171,7 @@ function updateInputLabels() {
   $('#cutaway').disabled=view.housingMode!=='cutaway';$('#housing').disabled=view.housingMode==='hidden';
   if($('#converterSlip'))$('#converterSlip').disabled=Boolean(simulator.settings.converterLock);
   $('#oilFlow').disabled=!view.lubrication;
+  $('#scene-labels').setAttribute('aria-pressed', String(fullSceneLabels && view.labels));
   $('#oil-legend').hidden=!view.lubrication;
   for(const b of document.querySelectorAll('[data-gear]'))b.setAttribute('aria-pressed',String(b.dataset.gear===simulator.settings.gear));
 }
@@ -288,7 +296,7 @@ function drawChart(){
   const fields=chartMetric==='rpm'?['inputRpm','outputRpm']:chartMetric==='torque'?['inputTorque','outputTorque']:['inputPowerKW','outputPowerKW'];
   const unit={rpm:'rpm',torque:'N·m',power:'kW'}[chartMetric];
   const values=trace.flatMap(p=>fields.map(f=>p[f]||0));const min=Math.min(0,...values), max=Math.max(chartMetric==='rpm'?1000:chartMetric==='torque'?100:10,...values)*1.12,low=min<0?min*1.12:0;
-  const left=44,right=w-14,top=9,bottom=h-25;const range=Math.max(1,max-low);ctx.font='10px Segoe UI, sans-serif';ctx.textBaseline='middle';
+  const left=44,right=w-14,top=9,bottom=h-25;const range=Math.max(1,max-low);ctx.font=`10px ${getComputedStyle(canvas).fontFamily}`;ctx.textBaseline='middle';
   for(let i=0;i<4;i++){const y=top+(bottom-top)*i/3;ctx.strokeStyle='#26323c';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();ctx.fillStyle='#81909c';ctx.textAlign='right';ctx.fillText(fmt(max-range*i/3,chartMetric==='power'?1:0),left-7,y);}
   ctx.textAlign='left';ctx.fillStyle='#81909c';ctx.fillText(unit,3,h-10);
   const end=Math.max(20,snapshot.time||0),begin=end-20;
@@ -338,7 +346,14 @@ document.addEventListener('click',event=>{
 });
 document.addEventListener('input',event=>{const el=event.target;if(el.dataset.setting)setSettings({[el.dataset.setting]:el.type==='checkbox'?el.checked:Number(el.value)});if(el.dataset.view){view[el.dataset.view]=el.type==='checkbox'?el.checked:Number(el.value);updateInputLabels();if(['bearings','clutches','lubrication'].includes(el.dataset.view)&&inspectorTab==='parts')renderInspector();persist();}});
 $('#toggle-pause').onclick=()=>togglePause();$('#reset').onclick=reset;$('#reset-camera').onclick=()=>{scene?.resetCamera();setCamera('isometric');};$('#experiment').onclick=startExperiment;$('#help').onclick=showHelp;$('#save-project').onclick=saveProject;$('#open-project').onclick=openProject;$('#record').onclick=recordComparison;
+$('#new-project').onclick=newProject;
 $('#quick-experiment').onclick=startExperiment;$('#focus-scene').onclick=()=>toggleFocus();
+$('#scene-labels').onclick = () => {
+  fullSceneLabels = !fullSceneLabels || !view.labels;
+  scene?.setFullLabels(fullSceneLabels);
+  if (!view.labels) { view.labels = true; syncInputs(); persist(); }
+  else $('#scene-labels').setAttribute('aria-pressed', String(fullSceneLabels));
+};
 $('#show-result').onclick=()=>showModal(`<h2>자동 실험의 전후 결과</h2><div class="experiment-result">${$('#experiment-result').innerHTML.replace(/<button[^>]*>[\s\S]*?<\/button>/,'')}</div>`);
 $('#quality').onchange=e=>{view.quality=e.target.value;persist();};
 $('#toggle-chart').onclick=()=>{const collapsed=$('.chart-panel').classList.toggle('is-collapsed');$('#toggle-chart').setAttribute('aria-expanded',String(!collapsed));$('#toggle-chart').textContent=collapsed?'그래프 펼치기':'그래프 접기';drawChart();};
@@ -347,7 +362,7 @@ $('#recover-storage').onclick=()=>{const recovery=storageManager.recovery;if(!re
 $('#capture').onclick=()=>{if(!scene)return;try{const data=scene.capture();const bytes=Uint8Array.from(atob(data.split(',')[1]),c=>c.charCodeAt(0));download(new Blob([bytes],{type:'image/png'}),`transmission-${type}-${Date.now()}.png`);if(!native)toast('3D 화면을 저장합니다.');}catch(e){toast(`이미지를 저장할 수 없습니다: ${e.message}`);}};
 $('#project-file').onchange=async event=>{try{const file=event.target.files?.[0];if(file){if(file.size>2*1024*1024)throw new Error('파일이 너무 큽니다.');loadProject(await file.text());}}catch(e){toast(`파일을 열 수 없습니다: ${e.message}`);}finally{event.target.value='';}};
 $('#modal').addEventListener('click',e=>{if(e.target===$('#modal')){const b=$('#modal').getBoundingClientRect();if(e.clientX<b.left||e.clientX>b.right||e.clientY<b.top||e.clientY>b.bottom)$('#modal').close();}});
-document.addEventListener('keydown',e=>{if($('#modal').open)return;if(e.key==='Escape'&&focused){e.preventDefault();toggleFocus(false);return;}if(e.target.matches('input,textarea,select')||e.ctrlKey||e.metaKey||e.altKey)return;if(e.code==='KeyF'){e.preventDefault();toggleFocus();}if(e.code==='Space'){e.preventDefault();togglePause();}if(e.key==='ArrowUp'||e.key==='ArrowDown'){e.preventDefault();const gears=TRANSMISSIONS[type].gears.filter(g=>!['N','R'].includes(g.id));const index=gears.findIndex(g=>g.id===simulator.settings.gear);const next=gears[Math.max(0,Math.min(gears.length-1,index+(e.key==='ArrowUp'?1:-1)))];if(next)setSettings({gear:next.id});}});
+document.addEventListener('keydown',e=>{if($('#modal').open)return;if(e.key==='Escape'&&focused){e.preventDefault();toggleFocus(false);return;}if(e.target.matches('input,textarea,select')||e.ctrlKey||e.metaKey||e.altKey)return;if(e.code==='KeyF'){e.preventDefault();toggleFocus();}if(e.code==='Space'&&!e.target.matches('button,a')){e.preventDefault();togglePause();}if(e.key==='ArrowUp'||e.key==='ArrowDown'){e.preventDefault();const gears=TRANSMISSIONS[type].gears.filter(g=>!['N','R'].includes(g.id));const index=gears.findIndex(g=>g.id===simulator.settings.gear);const next=gears[Math.max(0,Math.min(gears.length-1,index+(e.key==='ArrowUp'?1:-1)))];if(next)setSettings({gear:next.id});}});
 native?.onCommand(command);native?.onSaveResult(result=>{if(result.path)toast('파일을 저장했습니다.');else if(result.error)toast(result.error);else if(result.canceled)toast('파일 저장을 취소했습니다.');});
 let externalClock = false;
 window.render_game_to_text = () => JSON.stringify({ coordinates: 'X: shaft axis, Y: up, Z: toward front; RPM about local shaft axis; display slowed independently', type, paused, settings:simulator.settings, time:snapshot.time, outputRpm:snapshot.outputRpm, outputTorque:snapshot.outputTorque, lossPowerKW:snapshot.lossPowerKW, detail:snapshot.detail, selectedPart, focusedPart:scene?.getDiagnostics().focusedPart });

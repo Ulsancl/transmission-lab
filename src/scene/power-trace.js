@@ -9,16 +9,17 @@ export function createPowerTrace({ id, ports, points, color, power }) {
   group.visible = false;
   const vertices = points.map(p => new THREE.Vector3(...p));
   const lineMaterial = new THREE.LineBasicMaterial({
-    color, transparent: true, opacity: 0.4, depthTest: false, depthWrite: false, toneMapped: false,
+    color, transparent: true, depthTest: false, depthWrite: false, toneMapped: false, fog: false,
   });
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(vertices), lineMaterial);
   line.frustumCulled = false;
   line.renderOrder = 30;
   group.add(line);
   const arrowMaterial = new THREE.MeshBasicMaterial({
-    color, transparent: true, depthTest: false, depthWrite: false, toneMapped: false,
+    color: new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.12),
+    transparent: true, depthTest: false, depthWrite: false, toneMapped: false, fog: false,
   });
-  const head = new THREE.ConeGeometry(0.052, 0.145, 10);
+  const head = new THREE.ConeGeometry(0.064, 0.195, 10);
   const arrows = Array.from({ length: 7 }, () => {
     const arrow = new THREE.Mesh(head, arrowMaterial);
     arrow.renderOrder = 31;
@@ -53,8 +54,8 @@ export function createPowerTrace({ id, ports, points, color, power }) {
     if (!group.visible) return;
     const count = Math.min(arrows.length, Math.max(1, Math.round(distance / 0.65)));
     const strength = THREE.MathUtils.clamp(Math.sqrt(Math.abs(signedKW) / 40), 0.16, 1);
-    lineMaterial.opacity = 0.22 + strength * 0.27;
-    arrowMaterial.opacity = 0.62 + strength * 0.36;
+    lineMaterial.opacity = 0.38 + strength * 0.34;
+    arrowMaterial.opacity = 0.78 + strength * 0.22;
     const sign = Math.sign(signedKW);
     phase = ((phase + sign * dt * speed * 65 / distance) % 1 + 1) % 1;
     for (let i = 0; i < arrows.length; i += 1) {
