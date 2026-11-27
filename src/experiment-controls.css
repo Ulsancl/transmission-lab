@@ -1,0 +1,14 @@
+.experiment-timing {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #2a404a;
+}
+
+.experiment-timing .control-hint {
+  margin-top: 10px;
+}
+
+.experiment-timing input:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 5px;
+}

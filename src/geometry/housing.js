@@ -99,6 +99,31 @@ function ringGeometry(profile, width, radialDepth = 0.17, opening) {
   return shellGeometry([{ ...profile, x: profile.x - width / 2 }, { ...profile, x: profile.x + width / 2 }], radialDepth, opening, 64, 1);
 }
 
+function ribGeometry(profiles, angle, lift) {
+  const triangles = [], sections = [];
+  for (let i = 0; i <= 12; i += 1) {
+    const fraction = i / 12, profile = interpolatedProfile(profiles, fraction);
+    const height = lift * (0.23 + 0.77 * Math.sin(Math.PI * fraction) ** 0.62);
+    const width = 0.077 / Math.sqrt(profile.ry * profile.rz);
+    // A wide cast root tapers through two fillets into a raised, narrow crown.
+    const crossSection = [[-1, -0.023], [-0.8, height * 0.30], [-0.48, height], [0.48, height], [0.8, height * 0.30], [1, -0.023]];
+    sections.push(crossSection.map(([offset, rise]) => section(profile, angle + offset * width, -rise)));
+  }
+  const edges = sections[0].length;
+  for (let i = 1; i < sections.length; i += 1) {
+    const a = sections[i - 1], b = sections[i];
+    for (let j = 0; j < edges; j += 1) {
+      const next = (j + 1) % edges;
+      quad(triangles, a[j], b[j], b[next], a[next]);
+    }
+  }
+  const first = sections[0], last = sections.at(-1);
+  for (let i = 1; i < edges - 1; i += 1) {
+    triangles.push([first[0], first[i], first[i + 1]], [last[0], last[i + 1], last[i]]);
+  }
+  return bufferFromTriangles(triangles, 1.6);
+}
+
 function mesh(geometry, material, group) {
   const object = new THREE.Mesh(geometry, material); object.castShadow = true; object.receiveShadow = true;
   group.add(object); return object;
@@ -211,9 +236,9 @@ function configuration(type) {
 export function createGearboxHousing(type = 'mt', options = {}) {
   const config = configuration(type), group = new THREE.Group(); group.name = `${type}-cast-cutaway-housing`;
   group.rotation.y = config.orientation;
-  const cast = finish(options.color ?? 0x8a9092, 0.78, 0.68, 'grain cast aluminum gearbox shell', 0.019);
-  const machine = finish(0xbfc4c6, 0.96, 0.28, 'machined aluminum assembly flange');
-  const cut = finish(0x813124, 0.20, 0.75, 'painted saw-cut wall cross-section', 0.005);
+  const cast = finish(options.color ?? 0x747c7f, 0.74, 0.66, 'grain cast aluminum gearbox shell', 0.025);
+  const machine = finish(0xaeb5b7, 0.91, 0.34, 'machined aluminum assembly flange', 0.004);
+  const cut = finish(0xb1816c, 0.60, 0.56, 'saw-cut aluminum wall cross-section', 0.009);
   const steel = finish(0x81868b, 0.95, 0.32, 'zinc plated hex head fastener');
   const gasket = finish(0x343536, 0.04, 0.93, 'case split elastomer gasket');
   const wallThickness = 0.13, dynamic = [], angularDetails = [], covers = [], bearingSupports = [], bearingFits = [];
@@ -251,15 +276,13 @@ export function createGearboxHousing(type = 'mt', options = {}) {
   addFlange(config.body.at(-1), 0.13, 0.10, 12);
   addFlange(config.tail.at(-1), 0.12, 0.08, 8);
 
-  // Tall exterior ribs are attached to the cast body. A removed housing sector
-  // also removes its ribs and fasteners so that none floats in the cut window.
+  // Ribs follow the curved casting, including its taper at either flange.
+  // Hardware in the missing sector leaves with the case wall.
   for (let i = 0; i < 12; i += 1) {
-    const angle = i * TAU / 12 + 0.05, reinforcement = new THREE.Group(); group.add(reinforcement);
-    for (let j = 0; j < config.body.length - 1; j += 1) {
-      const a = section(config.body[j], angle, -0.065), b = section(config.body[j + 1], angle, -0.065);
-      const rib = beam(a, b, 0.105, 0.11, cast, reinforcement); rib.userData.feature = 'reinforcing-rib'; ribCount += 1;
-    }
-    angularDetails.push({ group: reinforcement, angle });
+    const angle = i * TAU / 12 + 0.05, height = i % 3 === 0 ? 0.162 : 0.103;
+    const rib = mesh(ribGeometry(config.body, angle, height), cast, group);
+    rib.userData.feature = 'reinforcing-rib'; ribCount += 1;
+    angularDetails.push({ group: rib, angle });
   }
   for (const fraction of [0.24, 0.52, 0.78]) {
     const profile = interpolatedProfile(config.body, fraction);
