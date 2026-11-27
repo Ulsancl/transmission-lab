@@ -1,9 +1,9 @@
 import './style.css';
 import './experiment-controls.css';
-import { TRANSMISSIONS, defaultSettings, normalizeSettings, createSimulator } from './model.js';
+import { TRANSMISSIONS, defaultSettings, normalizeSettings, createSimulator, isTransmissionType } from './model.js';
 import { createTransmissionScene } from './scene.js';
 import packageInfo from '../package.json';
-import { captureComparison, createProject, readProject, csvCell, COMPARISON_LIMIT } from './project.js';
+import { captureComparison, createProject, readProject, serializeProject, checkProjectBytes, csvCell, COMPARISON_LIMIT } from './project.js';
 import { advanceClock } from './clock.js';
 import { createProjectStorage } from './storage.js';
 import { EXPERIMENT_TIMING, createExperimentPlan } from './experiment-timing.js';
@@ -27,7 +27,6 @@ const META = {
   at:{tag:'AT',title:'자동변속기',sub:'유성기어와 토크컨버터',headline:'고정하는 부품이 바꾸는 회전',experiment:'유성기어 1 → 4단 실험',accent:'#b3a0ff'},
   ecvt:{tag:'e-CVT',title:'하이브리드',sub:'기계와 전기로 나누는 동력',headline:'세 개의 축, 두 갈래의 에너지',experiment:'MG1 회전수 변화 실험',accent:'#90df9e'},
 };
-const validType = value => Object.hasOwn(META,value);
 const VIEW_BOOLEAN_KEYS=['labels','flow','bearings','clutches','lubrication','oilFlow'];
 const CATEGORIES={all:'전체',gears:'기어',clutches:'클러치',bearings:'베어링',lubrication:'윤활'};
 const categoryVisibility={bearings:'bearings',clutches:'clutches',lubrication:'lubrication'};
@@ -47,7 +46,7 @@ let type='dct', view=defaultView();
 const storageManager=createProjectStorage(() => window.localStorage,readProject);
 const storageState=storageManager.load();
 const stored=storageState.data;
-if(validType(stored?.settings?.type))type=stored.settings.type;
+if(isTransmissionType(stored?.settings?.type))type=stored.settings.type;
 let simulator=createSimulator(stored?.settings ? normalizeSettings(stored.settings) : defaultSettings(type));
 type=simulator.settings.type;
 if(stored?.view)view=normalizeView(stored.view);
@@ -176,13 +175,13 @@ function updateInputLabels() {
   for(const b of document.querySelectorAll('[data-gear]'))b.setAttribute('aria-pressed',String(b.dataset.gear===simulator.settings.gear));
 }
 function selectType(next,settings) {
-  if(!validType(next))return;
+  if(!isTransmissionType(next))return;
   type=next;sequence=null;selectedPart=null;view.selectedPart=null;lessonIndex=0;partFilter='all';view.focusCategory='all';trace=[];lastSample=-1;
   simulator=createSimulator(settings?normalizeSettings({...settings,type:next}):defaultSettings(next));snapshot=simulator.snapshot();
   scene?.setType(type);renderControls();renderExperimentResult();persist();drawChart();
 }
 function setSettings(partial,fromSequence=false) {
-  if(validType(partial?.type)&&partial.type!==type){selectType(partial.type,partial);return;}
+  if(isTransmissionType(partial?.type)&&partial.type!==type){selectType(partial.type,partial);return;}
   if(!fromSequence)sequence=null;
   simulator.setSettings(partial);snapshot=simulator.snapshot();syncInputs();updateUI();persist();
 }
@@ -232,7 +231,12 @@ function updateUI() {
     else {$('#part-motion-label').textContent=belt?'벨트 선속도':stationary?'구성 역할':'부품 회전수';$('#part-rpm').innerHTML=stationary?(part?.category==='lubrication'?'윤활·냉각 계통':['shift-clutches','pulley-pistons'].includes(id)?'복합 작동부':'고정 지지부'):`${fmt(belt?snapshot.beltSpeed:id==='planets'?snapshot.planetRpm:snapshot.partRpm?.[id],belt?2:0)} <small>${belt?'m/s':'rpm'}</small>`;}
   }
   for(const el of document.querySelectorAll('[data-part]'))el.querySelector('.part-status')?.classList.toggle('transmitting',snapshot.activeParts?.includes(el.dataset.part));
-  if(type==='dct')$('#clutch-indicator').innerHTML=`<div><span class="clutch-label">K1 · 홀수</span><b>${fmt((snapshot.clutchA||0)*100)}%</b><i style="--level:${(snapshot.clutchA||0)*100}%"></i></div><div><span class="clutch-label">K2 · 짝수</span><b>${fmt((snapshot.clutchB||0)*100)}%</b><i style="--level:${(snapshot.clutchB||0)*100}%"></i></div><small>${snapshot.shiftFrom?`${esc(snapshot.shiftFrom)} → ${esc(snapshot.shiftTo)} 변속 중`:`현재 ${esc(snapshot.gear)}${/^[1-6]$/.test(snapshot.gear)?'단':''} · 대기 ${esc(snapshot.nextGear||'—')}${/^[1-6]$/.test(snapshot.nextGear)?'단':''}`}</small>`;
+  if (type === 'dct') {
+    const indicator = $('#clutch-indicator');
+    const levels = [(snapshot.clutchA || 0) * 100, (snapshot.clutchB || 0) * 100];
+    indicator.innerHTML = `<div><span class="clutch-label">K1 · 홀수</span><b>${fmt(levels[0])}%</b><i></i></div><div><span class="clutch-label">K2 · 짝수</span><b>${fmt(levels[1])}%</b><i></i></div><small>${snapshot.shiftFrom?`${esc(snapshot.shiftFrom)} → ${esc(snapshot.shiftTo)} 변속 중`:`현재 ${esc(snapshot.gear)}${/^[1-6]$/.test(snapshot.gear)?'단':''} · 대기 ${esc(snapshot.nextGear||'—')}${/^[1-6]$/.test(snapshot.nextGear)?'단':''}`}</small>`;
+    indicator.querySelectorAll('i').forEach((bar, index) => bar.style.setProperty('--level', `${levels[index]}%`));
+  }
   else if(type==='at')$('#clutch-indicator').innerHTML=`<div class="mechanism-status">${simulator.settings.converterLock?'록업 연결':'유체로 전달'}<small>태양 ${fmt(snapshot.sunRpm)} · 링 ${fmt(snapshot.ringRpm)} rpm</small></div>`;
   else if(type==='ecvt')$('#clutch-indicator').innerHTML=`<div class="mechanism-status">전기·기계 동력 분기<small>MG1 ${snapshot.mg1PowerKW>=0?'발전':'구동'} ${fmt(Math.abs(snapshot.mg1PowerKW),1)} kW<br>MG2 ${snapshot.mg2PowerKW>=0?'구동':'회생'} ${fmt(Math.abs(snapshot.mg2PowerKW),1)} kW</small></div>`;
   else $('#clutch-indicator').innerHTML='';
@@ -320,7 +324,7 @@ function loadProject(content){
   const data=readProject(content);const nextView=normalizeView(data.view);
   comparisons=data.comparisons;latestExperiment=data.experiment;view=nextView;selectType(data.settings.type,data.settings);toast(data.legacy?'이전 형식의 조건을 불러왔습니다. 비교표의 재계산 표시를 확인해 주세요.':'프로젝트와 저장한 비교 결과를 불러왔습니다.');return true;
 }
-async function saveProject(){try{const contents=JSON.stringify(project(),null,2);if(native){const result=await native.saveProject({contents,name:'transmission-lab.transmission.json'});if(!result.canceled)toast('프로젝트를 저장했습니다.');}else{download(new Blob([contents],{type:'application/json'}),'transmission-lab.transmission.json');toast('프로젝트 파일을 저장합니다.');}}catch(e){toast(`저장 실패: ${e.message}`);}}
+async function saveProject(){try{const contents=serializeProject(project(),2);if(native){const result=await native.saveProject({contents,name:'transmission-lab.transmission.json'});if(result.saved)toast('프로젝트를 저장했습니다.');}else{download(new Blob([contents],{type:'application/json'}),'transmission-lab.transmission.json');toast('프로젝트 파일을 저장합니다.');}}catch(e){toast(`저장 실패: ${e.message}`);}}
 async function openProject(){try{if(native){const result=await native.openProject();if(!result.canceled)loadProject(result.content);}else $('#project-file').click();}catch(e){toast(`파일을 열 수 없습니다: ${e.message}`);}}
 function newProject(){comparisons=[];latestExperiment=null;view=defaultView();selectType('dct');togglePause(false);toast('새 프로젝트를 시작했습니다.');}
 function toggleFocus(value=!focused){focused=value;$('.scene-panel').classList.toggle('is-focused',focused);$('#focus-scene').textContent=focused?'작게 보기':'크게 보기';$('#focus-scene').setAttribute('aria-pressed',String(focused));$('#focus-scene').focus();}
@@ -360,21 +364,23 @@ $('#toggle-chart').onclick=()=>{const collapsed=$('.chart-panel').classList.togg
 $('#recover-storage').hidden=!storageManager.recovery;
 $('#recover-storage').onclick=()=>{const recovery=storageManager.recovery;if(!recovery)return;showModal(`<span class="eyebrow">STORAGE RECOVERY</span><h2>이전 저장 내용 보관</h2><p class="modal-lead">읽을 수 없거나 현재 앱이 지원하지 않는 이전 저장 내용을 보존했습니다. 원문을 파일로 받아 보관할 수 있습니다.</p><p class="help-note">${esc(recovery.reason)}</p><button id="export-recovery" class="primary-button">원문 파일 저장</button>`);$('#export-recovery').onclick=()=>download(new Blob([recovery.raw],{type:'application/json'}),'transmission-storage-recovery.json');};
 $('#capture').onclick=()=>{if(!scene)return;try{const data=scene.capture();const bytes=Uint8Array.from(atob(data.split(',')[1]),c=>c.charCodeAt(0));download(new Blob([bytes],{type:'image/png'}),`transmission-${type}-${Date.now()}.png`);if(!native)toast('3D 화면을 저장합니다.');}catch(e){toast(`이미지를 저장할 수 없습니다: ${e.message}`);}};
-$('#project-file').onchange=async event=>{try{const file=event.target.files?.[0];if(file){if(file.size>2*1024*1024)throw new Error('파일이 너무 큽니다.');loadProject(await file.text());}}catch(e){toast(`파일을 열 수 없습니다: ${e.message}`);}finally{event.target.value='';}};
+$('#project-file').onchange=async event=>{try{const file=event.target.files?.[0];if(file){checkProjectBytes(file.size);loadProject(new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer()));}}catch(e){toast(`파일을 열 수 없습니다: ${e.message}`);}finally{event.target.value='';}};
 $('#modal').addEventListener('click',e=>{if(e.target===$('#modal')){const b=$('#modal').getBoundingClientRect();if(e.clientX<b.left||e.clientX>b.right||e.clientY<b.top||e.clientY>b.bottom)$('#modal').close();}});
 document.addEventListener('keydown',e=>{if($('#modal').open)return;if(e.key==='Escape'&&focused){e.preventDefault();toggleFocus(false);return;}if(e.target.matches('input,textarea,select')||e.ctrlKey||e.metaKey||e.altKey)return;if(e.code==='KeyF'){e.preventDefault();toggleFocus();}if(e.code==='Space'&&!e.target.matches('button,a')){e.preventDefault();togglePause();}if(e.key==='ArrowUp'||e.key==='ArrowDown'){e.preventDefault();const gears=TRANSMISSIONS[type].gears.filter(g=>!['N','R'].includes(g.id));const index=gears.findIndex(g=>g.id===simulator.settings.gear);const next=gears[Math.max(0,Math.min(gears.length-1,index+(e.key==='ArrowUp'?1:-1)))];if(next)setSettings({gear:next.id});}});
-native?.onCommand(command);native?.onSaveResult(result=>{if(result.path)toast('파일을 저장했습니다.');else if(result.error)toast(result.error);else if(result.canceled)toast('파일 저장을 취소했습니다.');});
-let externalClock = false;
-window.render_game_to_text = () => JSON.stringify({ coordinates: 'X: shaft axis, Y: up, Z: toward front; RPM about local shaft axis; display slowed independently', type, paused, settings:simulator.settings, time:snapshot.time, outputRpm:snapshot.outputRpm, outputTorque:snapshot.outputTorque, lossPowerKW:snapshot.lossPowerKW, detail:snapshot.detail, selectedPart, focusedPart:scene?.getDiagnostics().focusedPart });
-window.advanceTime = ms => {
-  if (!Number.isFinite(ms) || ms < 0) return;
-  externalClock = true;
-  let remaining = Math.min(ms / 1000, 60);
-  while (remaining > 1e-9) { const dt=Math.min(remaining,0.05); if(!paused)advance(dt); scene?.update(snapshot,view,paused?0:dt); remaining-=dt; }
-  updateUI();
-};
+native?.onCommand(command);native?.onSaveResult(result=>{if(result.saved)toast('파일을 저장했습니다.');else if(result.error)toast(result.error);else if(result.canceled)toast('파일 저장을 취소했습니다.');});
 $('.brand').onclick=e=>{e.preventDefault();scene?.resetCamera();};
-window.transmissionLab={getState:()=>({settings:{...simulator.settings},view:{...view},snapshot:{...snapshot},paused,comparisons:comparisons.length,experiment:latestExperiment?structuredClone(latestExperiment):null,focused,sequence:!!sequence,scene:scene?.getDiagnostics()}),setSettings,selectType,reset,pause:()=>togglePause(true),play:()=>togglePause(false),selectPart,project,loadProject,scene,runExperiment:startExperiment,advance,recordComparison,persistNow,showComparisons,toggleFocus};
+let externalClock = false;
+if (__TRANSMISSION_TEST_HOOKS__) {
+  window.render_game_to_text = () => JSON.stringify({ coordinates: 'X: shaft axis, Y: up, Z: toward front; RPM about local shaft axis; display slowed independently', type, paused, settings:simulator.settings, time:snapshot.time, outputRpm:snapshot.outputRpm, outputTorque:snapshot.outputTorque, lossPowerKW:snapshot.lossPowerKW, detail:snapshot.detail, selectedPart, focusedPart:scene?.getDiagnostics().focusedPart });
+  window.advanceTime = ms => {
+    if (!Number.isFinite(ms) || ms < 0) return;
+    externalClock = true;
+    let remaining = Math.min(ms / 1000, 60);
+    while (remaining > 1e-9) { const dt=Math.min(remaining,0.05); if(!paused)advance(dt); scene?.update(snapshot,view,paused?0:dt); remaining-=dt; }
+    updateUI();
+  };
+  window.transmissionLab={getState:()=>({settings:{...simulator.settings},view:{...view},snapshot:{...snapshot},paused,comparisons:comparisons.length,experiment:latestExperiment?structuredClone(latestExperiment):null,focused,sequence:!!sequence,scene:scene?.getDiagnostics()}),setSettings,selectType,reset,pause:()=>togglePause(true),play:()=>togglePause(false),selectPart,project,loadProject,scene,runExperiment:startExperiment,advance,recordComparison,persistNow,showComparisons,toggleFocus};
+}
 renderControls();renderExperimentResult();
 if(matchMedia('(min-width:1061px) and (max-height:900px)').matches){$('.chart-panel').classList.add('is-collapsed');$('#toggle-chart').setAttribute('aria-expanded','false');$('#toggle-chart').textContent='그래프 펼치기';}
 if(storageState.error && !storageState.recovery) {

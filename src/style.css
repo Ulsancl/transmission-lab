@@ -187,3 +187,11 @@
   .condition-feedback { grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 12px; }
   .condition-graph { padding: 9px 0 0; border-inline-start: 0; border-top: 1px solid #2c414e; }
 }
+.graphics-reconnect {
+  margin-top: 14px;
+  padding: 9px 14px;
+  border: 1px solid #579b9b;
+  border-radius: 5px;
+  background: #264d51;
+  color: #d4f3ed;
+}

@@ -142,15 +142,19 @@ for (const [type, definition] of Object.entries(TRANSMISSIONS)) {
   definition.clutchArchitecture = type === 'mt' ? 'dry-single' : type === 'dct' ? 'wet-dual' : type === 'ecvt' ? 'none' : 'wet-actuation';
 }
 
+export function isTransmissionType(type) {
+  return typeof type === 'string' && Object.hasOwn(TRANSMISSIONS, type);
+}
+
 export function defaultSettings(type = 'dct') {
-  type = Object.hasOwn(TRANSMISSIONS, type) ? type : 'dct';
+  type = isTransmissionType(type) ? type : 'dct';
   const timing = EXPERIMENT_TIMING[type];
   return { type, rpm: 1800, torque: 140, gear: type === 'cvt' || type === 'ecvt' ? 'D' : '1', clutch: 1, cvtRatio: 1.5, converterLock: false, converterSlip: 0.12, mg1Rpm: 2000, mg2Torque: 40, efficiency: 0.96, [timing.key]: timing.initial };
 }
 
 export function normalizeSettings(value = {}) {
   const source = value && typeof value === 'object' ? value : {};
-  const type = Object.hasOwn(TRANSMISSIONS, source.type) ? source.type : 'dct';
+  const type = isTransmissionType(source.type) ? source.type : 'dct';
   const defaults = defaultSettings(type);
   const normalized = { ...defaults };
   const timing = EXPERIMENT_TIMING[type];
@@ -552,7 +556,7 @@ export function createSimulator(initialSettings = {}) {
     get settings() { return { ...settings }; },
     setSettings(partial = {}) {
       const old = settings;
-      const typeChanged = typeof partial.type === 'string' && partial.type !== old.type && Object.hasOwn(TRANSMISSIONS, partial.type);
+      const typeChanged = partial.type !== old.type && isTransmissionType(partial.type);
       settings = normalizeSettings(typeChanged ? { ...defaultSettings(partial.type), ...partial } : { ...old, ...partial });
       if (typeChanged) { time = 0; transition = null; }
       else if (old.type === 'dct' && old.gear !== settings.gear) {

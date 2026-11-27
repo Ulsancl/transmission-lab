@@ -1,0 +1,4 @@
+{
+  "maxProjectBytes": 2097152,
+  "projectSizeError": "프로젝트 파일은 2 MiB 이하인 JSON이어야 합니다."
+}

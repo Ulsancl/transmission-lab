@@ -15,6 +15,7 @@ const output = artifactDirectory(root, path.join(root, 'output', `${process.env.
 await fs.mkdir(output, { recursive: true });
 const profile = await fs.mkdtemp(path.join(output, 'profile-'));
 const executablePath = process.env.TRANSMISSION_DESKTOP_EXE || require('electron');
+const sourceTestApp = path.join(root, 'release', 'desktop-test-source');
 const env = { ...process.env, TRANSMISSION_LAB_DATA_DIR: profile };
 delete env.ELECTRON_RUN_AS_NODE;
 const errors = [], remoteRequests = [], checks = [];
@@ -23,7 +24,7 @@ const state = () => page.evaluate(() => window.transmissionLab.getState());
 const projectPath = path.join(output, '변속기 실험.transmission.json');
 async function check(name, action) { await action(); checks.push(name); console.log(`PASS ${name}`); }
 async function launch() {
-  app = await electron.launch({ executablePath, args: process.env.TRANSMISSION_DESKTOP_EXE ? [] : [root], env, timeout: 45000 });
+  app = await electron.launch({ executablePath, args: process.env.TRANSMISSION_DESKTOP_EXE ? [] : [sourceTestApp], env, timeout: 45000 });
   page = await app.firstWindow();
   page.setDefaultTimeout(90000);
   page.on('pageerror', e => errors.push(e.message));

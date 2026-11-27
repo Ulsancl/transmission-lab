@@ -1345,7 +1345,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   renderer.domElement.addEventListener('pointerdown', pointerDown); renderer.domElement.addEventListener('pointerup', pointerUp);
   const graphicsMessage = document.createElement('div'); graphicsMessage.className = 'scene-graphics-recovery';
   Object.assign(graphicsMessage.style, { position: 'absolute', inset: '0', zIndex: '10', display: 'none', placeContent: 'center', padding: '24px', textAlign: 'center', background: '#0d1b25ed', color: '#c5d9e8', fontSize: '12px', lineHeight: '1.8' });
-  graphicsMessage.innerHTML = '<p>3D 화면을 다시 연결하는 중입니다.<br>실험 조건과 프로젝트는 유지됩니다.</p><button type="button" style="margin-top:14px;padding:9px 14px;border:1px solid #579b9b;border-radius:5px;background:#264d51;color:#d4f3ed">화면 다시 연결</button>'; container.appendChild(graphicsMessage);
+  graphicsMessage.innerHTML = '<p>3D 화면을 다시 연결하는 중입니다.<br>실험 조건과 프로젝트는 유지됩니다.</p><button type="button" class="graphics-reconnect">화면 다시 연결</button>'; container.appendChild(graphicsMessage);
   graphicsMessage.querySelector('button').onclick = () => { if (graphicsControl && renderer.getContext().isContextLost()) graphicsControl.restoreContext(); else window.location.reload(); };
   const onContextLost = event => { event.preventDefault(); contextLost = true; renderInvalidated = true; graphicsMessage.style.display = 'grid'; };
   const onContextRestored = () => {

@@ -9,10 +9,9 @@
   "license": "UNLICENSED",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "prebuild": "node scripts/clean-dist.mjs",
-    "build": "vite build",
+    "build": "node scripts/web-build.mjs",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "node --test tests/model.test.mjs tests/geometry.test.mjs tests/project.test.mjs tests/detail-model.test.mjs tests/gear-detail.test.mjs tests/mechanical-motion.test.mjs tests/window-state.test.mjs tests/safe-files.test.mjs tests/experiment-conditions.test.mjs",
+    "test": "node --test tests/model.test.mjs tests/geometry.test.mjs tests/project.test.mjs tests/project-files.test.mjs tests/detail-model.test.mjs tests/gear-detail.test.mjs tests/mechanical-motion.test.mjs tests/window-state.test.mjs tests/safe-files.test.mjs tests/experiment-conditions.test.mjs",
     "test:browser": "node tests/browser.test.mjs",
     "test:consumer": "node tests/consumer.test.mjs",
     "test:scene-product": "node tests/scene-product.test.mjs",
@@ -20,12 +19,15 @@
     "pretest:desktop": "node scripts/desktop.mjs prepare-test",
     "test:desktop": "node tests/desktop.test.mjs",
     "desktop": "node scripts/desktop.mjs start",
-    "package:desktop": "node scripts/desktop.mjs package"
+    "package:desktop": "node scripts/desktop.mjs package",
+    "package:desktop-test": "node scripts/desktop.mjs package-test",
+    "package:release": "node scripts/desktop.mjs release"
   },
   "dependencies": {
     "three": "^0.180.0"
   },
   "devDependencies": {
+    "@electron/fuses": "1.8.0",
     "electron": "44.11.1",
     "electron-builder": "26.15.3",
     "playwright": "^1.55.1",
