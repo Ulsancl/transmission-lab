@@ -6,6 +6,8 @@
 
 CI는 `npm ci --ignore-scripts`로 잠금 파일의 의존성을 설치한 뒤, Playwright Chromium과 데스크톱 빌드의 Electron 준비 단계만 명시적으로 실행합니다. 소스와 잠금 파일을 검토한 뒤 빌드하세요. Electron·Chromium·NSIS의 바이너리 준비는 각 도구의 공급 경로에 의존합니다.
 
+Windows에서 네이티브 프로젝트를 저장할 때 현재 계정만 접근할 수 있는 임시 폴더에 먼저 기록합니다. 기존 파일을 덮어쓰면 Windows의 파일 교체 기능이 대상 파일의 접근 제어 목록(DACL)을 보존합니다. 권한을 보존할 수 없거나 저장 경로에 연결·재분석 지점이 있는 경우 앱이 저장 오류를 표시합니다. 교체가 중단되고 원본을 제자리로 돌릴 수 없는 경우 `.transmission-save-*` 임시 폴더에 `previous.json` 백업을 보존합니다.
+
 ## Windows 정식 배포
 
 `npm run package:desktop`은 개발·검증용 패키징입니다. Playwright의 메인 프로세스 제어가 필요한 독립 앱 검사는 `npm run package:desktop-test`로 만든 별도 패키지에서 실행합니다. 배포용 실행 파일은 Node 실행 모드·Node 환경 옵션·메인 프로세스 디버거를 끄고 내장 ASAR 무결성 검사를 사용합니다.

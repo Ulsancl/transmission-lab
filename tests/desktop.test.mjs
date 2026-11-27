@@ -233,7 +233,7 @@ try {
     assert.ok(Math.abs(saved.view.speed - 1 / 30) < 1e-8);
     assert.equal(saved.view.bearings, false); assert.equal(saved.view.clutches, false);
     assert.equal(saved.view.lubrication, true); assert.equal(saved.view.oilFlow, false);
-    assert.deepEqual((await fs.readdir(output)).filter(n => n.endsWith('.tmp')), []);
+    assert.deepEqual((await fs.readdir(output)).filter(n => n.endsWith('.tmp') || n.startsWith('.transmission-save-')), []);
   });
   await check('save/open cancellation leaves settings and files intact', async () => {
     const before = (await state()).settings, canceledPath = path.join(output, 'canceled-project.json');

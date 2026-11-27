@@ -3,6 +3,7 @@ const { constants } = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { maxProjectBytes, projectSizeError } = require('../src/project-limits.json');
+const { windowsSaveProject } = require('./windows-save.cjs');
 
 async function readProjectFile(target) {
   const file = await fs.open(target, constants.O_RDONLY | (constants.O_NONBLOCK || 0));
@@ -29,11 +30,15 @@ async function saveProjectFile(target, contents, temporaryName = randomUUID()) {
   if (typeof contents !== 'string' || contents.length > maxProjectBytes || Buffer.byteLength(contents) > maxProjectBytes) {
     throw new Error(projectSizeError);
   }
+  if (process.platform === 'win32') return windowsSaveProject(target, contents, temporaryName);
   const temporary = path.join(path.dirname(target), '.transmission-' + temporaryName + '.tmp');
   const file = await fs.open(temporary, 'wx', 0o600);
   let installed = false;
   try {
-    try { await file.writeFile(contents, 'utf8'); }
+    try {
+      await file.writeFile(contents, 'utf8');
+      await file.sync();
+    }
     finally { await file.close(); }
     await fs.rename(temporary, target);
     installed = true;
