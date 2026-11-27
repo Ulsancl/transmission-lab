@@ -1,3 +1,5 @@
+import { serializeProject } from './project.js';
+
 export const STORAGE_KEY = 'transmission-lab.v2';
 export const LEGACY_KEY = 'transmission-lab.v1';
 
@@ -12,10 +14,9 @@ export function createProjectStorage(storageOrGetter, decode) {
       const raw = current ?? old;
       if (!raw) return { data: null };
       try {
-        const value = JSON.parse(raw);
-        if(value===null)return {data:null};
-        const content = current === null && !value.format ? JSON.stringify({ ...value, format: 'transmission-lab-project', version: 1 }) : raw;
-        const data=decode(content), backup=storage.getItem(`${STORAGE_KEY}.recovery`);
+        const data = decode(raw, { storageVersion: current === null ? 1 : 2 });
+        if (data === null) return { data: null };
+        const backup = storage.getItem(`${STORAGE_KEY}.recovery`);
         if(backup!==null)recovery={raw:backup,key:`${STORAGE_KEY}.recovery`,reason:'이전에 자동으로 열지 못한 원문 백업입니다.'};
         return { data, recovery };
       } catch (error) {
@@ -36,7 +37,7 @@ export function createProjectStorage(storageOrGetter, decode) {
       ? '이전 저장 내용을 보존하고 있습니다. 프로젝트 파일로 저장해 주세요.'
       : '자동 저장 공간을 사용할 수 없습니다. 프로젝트 파일로 저장해 주세요.' };
     try {
-      getStorage().setItem(STORAGE_KEY, JSON.stringify(project));
+      getStorage().setItem(STORAGE_KEY, serializeProject(project));
       return { ok: true };
     } catch { return { ok: false, reason: '자동 저장 공간을 사용할 수 없습니다. 프로젝트 파일로 저장해 주세요.' }; }
   }

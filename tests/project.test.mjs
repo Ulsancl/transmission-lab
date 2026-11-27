@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSimulator, defaultSettings } from '../src/model.js';
-import { captureComparison, createProject, readProject, csvCell } from '../src/project.js';
+import { createSimulator, defaultSettings, normalizeSettings } from '../src/model.js';
+import { captureComparison, createProject, readProject, serializeProject, maxProjectBytes, csvCell } from '../src/project.js';
 import { advanceClock } from '../src/clock.js';
 import { createProjectStorage, STORAGE_KEY, LEGACY_KEY } from '../src/storage.js';
 
@@ -35,6 +35,36 @@ test('old project conditions are explicitly labelled as reconstructed results', 
   const settings = defaultSettings('dct');
   const result = readProject(JSON.stringify({ format: 'transmission-lab-project', version: 1, settings, comparisons: [{ type: 'dct', settings, name: 'old' }] }));
   assert.equal(result.legacy, true); assert.equal(result.comparisons[0].source, 'recalculated-legacy');
+});
+test('project and model use string transmission identifiers at every import boundary', () => {
+  const simulator = createSimulator(defaultSettings('mt'));
+  const capture = captureComparison(simulator.settings, simulator.snapshot(), 'record');
+  const project = createProject({ settings: simulator.settings, view: {}, comparisons: [capture], experiment: { before: capture, after: capture, duration: 1 } });
+  assert.equal(normalizeSettings({ type: ['mt'] }).type, 'dct');
+  for (const select of [p => p.settings, p => p.comparisons[0], p => p.experiment.before, p => p.experiment.after.settings]) {
+    const invalid = structuredClone(project);
+    select(invalid).type = ['mt'];
+    assert.throws(() => readProject(JSON.stringify(invalid)));
+  }
+});
+test('project UTF-8 limits apply to input and serialized output', () => {
+  const project = createProject({ settings: defaultSettings('mt'), view: {} });
+  const base = JSON.stringify({ ...project, annotation: '' });
+  const remaining = maxProjectBytes - Buffer.byteLength(base);
+  const annotation = '가'.repeat(Math.floor(remaining / 3)) + ' '.repeat(remaining % 3);
+  assert.equal(Buffer.byteLength(serializeProject({ ...project, annotation })), maxProjectBytes);
+  assert.equal(readProject(JSON.stringify({ ...project, annotation })).settings.type, 'mt');
+  assert.throws(() => serializeProject({ ...project, annotation: annotation + '가' }), /2 MiB/);
+  assert.throws(() => readProject(JSON.stringify({ ...project, annotation: annotation + '가' })), /2 MiB/);
+});
+test('historical snapshot details round-trip within the aggregate record budget', () => {
+  const simulator = createSimulator(defaultSettings('mt'));
+  const snapshot = { ...simulator.snapshot(), annotation: { label: 'archived' } };
+  const capture = captureComparison(simulator.settings, snapshot, 'old');
+  const project = createProject({ settings: simulator.settings, view: {}, comparisons: [capture] });
+  assert.deepEqual(readProject(serializeProject(project, 2)).comparisons[0].snapshot, snapshot);
+  project.comparisons[0].snapshot.annotation = Array(10).fill('a'.repeat(1000));
+  assert.throws(() => readProject(JSON.stringify(project)), /계산값/);
 });
 test('invalid, future, missing and over-capacity results are rejected atomically', () => {
   const simulator = createSimulator(defaultSettings('dct'));

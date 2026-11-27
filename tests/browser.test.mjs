@@ -24,6 +24,12 @@ page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
 const results=[];
 async function check(name,action){await action();results.push({name,passed:true});console.log(`PASS ${name}`);}
 try {
+ if (server) await check('Development server keeps test artifacts private', async () => {
+   const file = path.join(output, 'private-fixture.txt');
+   await fs.writeFile(file, 'test output');
+   const route = path.relative(server.config.root, file).split(path.sep).join('/');
+   assert.equal((await page.request.get(url + '/' + route)).status(), 403);
+ });
  await page.goto(url);await page.waitForFunction(()=>window.transmissionLab?.getState().scene?.meshCount>0,{timeout:30000});
  await page.evaluate(()=>window.transmissionLab.pause());
  if(process.env.CI==='true'){

@@ -3,18 +3,24 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { normalizeWindowState } = require('./window-state.cjs');
+const { readProjectFile, saveProjectFile } = require('./project-files.cjs');
+const { maxProjectBytes, projectSizeError } = require('../src/project-limits.json');
 
 const APP_URL = 'app://transmission/';
 const APP_NAME = 'Transmission Lab';
-const MAX_PROJECT_BYTES = 40 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
+const downloadTypes = new Map([['.png', 'PNG 이미지'], ['.csv', 'CSV 표'], ['.json', 'JSON 파일']]);
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.txt': 'text/plain; charset=utf-8' };
 let mainWindow, calculationBusy = false, nativeBusy = 0, closePrompt = false;
 const downloads = new Set();
 
 app.setName(APP_NAME);
 // Keep the data directory and origin stable when a new version is installed.
-const profileOverride = process.env.TRANSMISSION_LAB_DATA_DIR;
-if (profileOverride && !path.isAbsolute(profileOverride)) throw new Error('TRANSMISSION_LAB_DATA_DIR must be absolute');
+const testProfileAllowed = !app.isPackaged || require('../package.json').transmissionTestBuild === true;
+const profileOverride = testProfileAllowed ? process.env.TRANSMISSION_LAB_DATA_DIR : undefined;
+if (profileOverride && (!path.isAbsolute(profileOverride) || (process.platform === 'win32' && !/^[A-Za-z]:[\\/]/.test(profileOverride)))) {
+  throw new Error('TRANSMISSION_LAB_DATA_DIR must be an absolute local path');
+}
 app.setPath('userData', profileOverride || path.join(app.getPath('appData'), APP_NAME));
 fs.mkdirSync(app.getPath('userData'), { recursive: true });
 
@@ -24,15 +30,28 @@ function log(message) {
   try { fs.appendFileSync(path.join(app.getPath('userData'), 'desktop.log'), `${new Date().toISOString()} ${message}\n`); } catch { /* Logging must not prevent launch. */ }
 }
 function trustedURL(value) {
-  try { const url = new URL(value); return url.protocol === 'app:' && url.host === 'transmission'; } catch { return false; }
+  try { const url = new URL(value); return url.protocol === 'app:' && url.host === 'transmission' && !url.username && !url.password; } catch { return false; }
 }
 function trustedSender(event) {
-  if (!mainWindow || event.sender !== mainWindow.webContents || !trustedURL(event.senderFrame?.url)) throw new Error('Invalid application sender');
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame ||
+      !trustedURL(event.senderFrame?.url)) throw new Error('Invalid application sender');
 }
 function command(value) { mainWindow?.webContents.send('transmission:command', value); }
 function saveResult(value) { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('transmission:save-result', value); }
-function safeFileName(value) {
-  return path.basename(String(value || 'transmission-project.transmission.json')).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '').slice(0, 160) || 'transmission-project.transmission.json';
+function safeFileName(value, fallback) {
+  let name = typeof value === 'string' ? path.basename(value) : '';
+  name = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 160).replace(/[. ]+$/, '');
+  if (/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]) *(?:\.|$)/i.test(name)) name = '_' + name;
+  return name || fallback;
+}
+
+function allowedRequest(value) {
+  if (trustedURL(value)) return true;
+  return value.startsWith('data:') || trustedBlob(value);
+}
+
+function trustedBlob(value) {
+  return value.startsWith('blob:') && trustedURL(value.slice('blob:'.length));
 }
 
 async function serveBundle(request) {
@@ -52,7 +71,7 @@ async function serveBundle(request) {
       'Content-Type': mime[path.extname(actual)] || 'application/octet-stream',
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'none'",
     } });
   } catch { return new Response('Not found', { status: 404 }); }
 }
@@ -66,27 +85,23 @@ function registerFileActions() {
     try {
       const result = await dialog.showOpenDialog(mainWindow, { title: '변속기 프로젝트 열기', properties: ['openFile'], filters: [{ name: '변속기 프로젝트', extensions: ['json'] }] });
       if (result.canceled || !result.filePaths[0]) return { canceled: true };
-      const target = result.filePaths[0], stat = await fsp.stat(target);
-      if (!stat.isFile() || stat.size > MAX_PROJECT_BYTES) throw new Error('프로젝트 파일은 40 MiB 이하인 JSON 파일이어야 합니다.');
-      return { canceled: false, content: await fsp.readFile(target, 'utf8'), path: target };
+      return { canceled: false, content: await readProjectFile(result.filePaths[0]) };
     } finally { nativeBusy--; }
   });
   ipcMain.handle('transmission:save-project', async (event, payload) => {
     trustedSender(event);
     if (nativeBusy) return { canceled: true };
-    if (!payload || typeof payload.contents !== 'string' || Buffer.byteLength(payload.contents) > MAX_PROJECT_BYTES) throw new Error('프로젝트 파일 크기가 너무 큽니다.');
+    const contents = payload?.contents;
+    if (typeof contents !== 'string' || contents.length > maxProjectBytes || Buffer.byteLength(contents) > maxProjectBytes) {
+      throw new Error(projectSizeError);
+    }
     nativeBusy++;
-    let temporary;
     try {
-      const result = await dialog.showSaveDialog(mainWindow, { title: '변속기 프로젝트 저장', defaultPath: path.join(app.getPath('documents'), safeFileName(payload.name)), filters: [{ name: '변속기 프로젝트', extensions: ['json'] }] });
+      const result = await dialog.showSaveDialog(mainWindow, { title: '변속기 프로젝트 저장', defaultPath: path.join(app.getPath('documents'), safeFileName(payload.name, 'transmission-project.transmission.json')), filters: [{ name: '변속기 프로젝트', extensions: ['json'] }] });
       if (result.canceled || !result.filePath) return { canceled: true };
-      temporary = `${result.filePath}.${process.pid}.${Date.now()}.tmp`;
-      await fsp.writeFile(temporary, payload.contents, { encoding: 'utf8', flag: 'wx' });
-      await fsp.rename(temporary, result.filePath);
-      temporary = null;
-      return { canceled: false, path: result.filePath };
+      await saveProjectFile(result.filePath, contents);
+      return { canceled: false, saved: true };
     } finally {
-      if (temporary) await fsp.unlink(temporary).catch(() => {});
       nativeBusy--;
     }
   });
@@ -133,6 +148,8 @@ function createWindow() {
     if (!input.isAutoRepeat) command(action);
   });
   mainWindow.webContents.on('will-navigate', (event, url) => { if (!trustedURL(url)) event.preventDefault(); });
+  mainWindow.webContents.on('will-redirect', event => event.preventDefault());
+  mainWindow.webContents.on('will-attach-webview', event => event.preventDefault());
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     calculationBusy = false;
     log(`Renderer ended: ${details.reason}`);
@@ -144,7 +161,11 @@ function createWindow() {
     dialog.showErrorBox(APP_NAME, '프로그램 파일을 읽지 못했습니다. 설치 파일로 다시 설치해 주세요.');
     app.quit();
   });
-  mainWindow.once('ready-to-show', () => { if (maximized) mainWindow.maximize(); mainWindow.show(); });
+  mainWindow.once('ready-to-show', () => {
+    if (maximized) mainWindow.maximize();
+    mainWindow.show();
+    log('Main window ready');
+  });
   mainWindow.on('close', event => {
     if (calculationBusy || nativeBusy || downloads.size) {
       event.preventDefault();
@@ -166,16 +187,26 @@ else {
   app.whenReady().then(async () => {
     protocol.handle('app', serveBundle);
     // All application content ships in the installer, including the first launch.
-    session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, callback) => callback({ cancel: true }));
+    session.defaultSession.webRequest.onBeforeRequest(({ url }, callback) => callback({ cancel: !allowedRequest(url) }));
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     session.defaultSession.setPermissionCheckHandler(() => false);
     session.defaultSession.on('will-download', (_event, item, contents) => {
-      if (!mainWindow || contents !== mainWindow.webContents) { item.cancel(); return; }
+      const name = safeFileName(item.getFilename(), '');
+      const ext = path.extname(name).toLowerCase();
+      const size = item.getTotalBytes();
+      if (!mainWindow || contents !== mainWindow.webContents || !trustedBlob(item.getURL()) ||
+          !downloadTypes.has(ext) || size <= 0 || size > MAX_DOWNLOAD_BYTES) {
+        item.cancel();
+        return;
+      }
       downloads.add(item);
-      item.setSaveDialogOptions({ title: '결과 파일 저장', defaultPath: path.join(app.getPath('documents'), safeFileName(item.getFilename())) });
+      item.setSaveDialogOptions({
+        title: '결과 파일 저장', defaultPath: path.join(app.getPath('documents'), name),
+        filters: [{ name: downloadTypes.get(ext), extensions: [ext.slice(1)] }],
+      });
       item.once('done', (_event, state) => {
         downloads.delete(item);
-        saveResult(state === 'completed' ? { path: item.getSavePath() } : state === 'cancelled' ? { canceled: true } : { error: '파일 저장을 완료하지 못했습니다.' });
+        saveResult(state === 'completed' ? { saved: true } : state === 'cancelled' ? { canceled: true } : { error: '파일 저장을 완료하지 못했습니다.' });
       });
     });
     registerFileActions();
