@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeGeometries, toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { TRANSMISSIONS } from './model.js';
 import { createMachinedGear } from './geometry/gears.js';
 import { createGearboxHousing } from './geometry/housing.js';
 import { radialBearingRatios, radialBearingKinematics, externalGearDrivenPhase } from './mechanical-motion.js';
+import { createPowerTrace } from './scene/power-trace.js';
 
 const C = { steel: 0x89929c, dark: 0x343b43, blue: 0x58d8df, amber: 0xffbe54, green: 0x63e1b6, purple: 0xb39cff, red: 0xff7185 };
 const NAMES = {
@@ -28,32 +29,39 @@ for (let i = 1; i <= 6; i += 1) NAMES[`gear-${i}`] = `${i}단 기어 쌍`;
 const TAU = Math.PI * 2;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number.isFinite(v) ? v : lo));
 const point = (x, y, z) => new THREE.Vector3(x, y, z);
+const rpmPower = (torque, rpm) => torque * rpm * TAU / 60000;
 
 let metalTextures;
 function getMetalTextures() {
   if (metalTextures) return metalTextures;
   const size = 256;
-  const make = lathed => {
+  const make = kind => {
     const bytes = new Uint8Array(size * size * 4);
     for (let y = 0; y < size; y += 1) for (let x = 0; x < size; x += 1) {
       const r = Math.hypot(x - size / 2, y - size / 2);
-      const pattern = lathed ? Math.sin(r * 2.9) : Math.sin(y * 2.4) + Math.sin(y * 0.43) * 0.3;
-      const noise = Math.sin(x * 13.37 + y * 31.19) * 4;
-      const v = Math.round(128 + pattern * 19 + noise), at = (y * size + x) * 4;
+      const lathed = Math.sin(r * 1.8) * 0.7 + Math.sin(r * 0.39) * 0.26;
+      const ground = Math.sin(y * 2.4 + x * 0.78) * 0.5 + Math.sin(y * 0.43 + x * 0.14) * 0.3;
+      const grain = Math.sin(x * 13.37 + y * 31.19) * Math.sin(x * 5.12 - y * 7.3);
+      const oil = Math.sin(x * 0.055 + y * 0.082) * Math.sin(x * 0.106 - y * 0.049);
+      const v = Math.round(kind === 'oil' ? 201 + oil * 35 + grain * 5 : 128 + (kind === 'lathed' ? lathed : ground) * 21 + grain * 5);
+      const at = (y * size + x) * 4;
       bytes[at] = v; bytes[at + 1] = v; bytes[at + 2] = v; bytes[at + 3] = 255;
     }
     const texture = new THREE.DataTexture(bytes, size, size, THREE.RGBAFormat); texture.needsUpdate = true;
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping; texture.magFilter = THREE.LinearFilter; texture.minFilter = THREE.LinearMipmapLinearFilter; texture.generateMipmaps = true; return texture;
   };
-  metalTextures = { brushed: make(false), lathed: make(true) }; return metalTextures;
+  metalTextures = { brushed: make('ground'), lathed: make('lathed'), oil: make('oil') }; return metalTextures;
 }
 
 function material(color = C.steel, options = {}) {
-  const { physicalColor = false, surface = 'brushed steel', ...properties } = options;
+  const { physicalColor = false, surface = 'brushed steel', lubricated = false, ...properties } = options;
   const pathColors = [C.blue, C.amber, C.green, C.purple, C.red];
   const steelColor = !physicalColor && pathColors.includes(color) ? 0x818b97 : color;
-  const mat = new THREE.MeshStandardMaterial({ color: steelColor, metalness: 0.94, roughness: 0.27, emissive: 0x000000, emissiveIntensity: 0,
-    bumpMap: getMetalTextures().brushed, bumpScale: 0.0035, ...properties });
+  const finish = { color: steelColor, metalness: 0.94, roughness: 0.27, emissive: 0x000000, emissiveIntensity: 0,
+    bumpMap: getMetalTextures().brushed, bumpScale: 0.0035, ...properties };
+  const mat = lubricated
+    ? new THREE.MeshPhysicalMaterial({ ...finish, roughnessMap: getMetalTextures().oil, clearcoat: 0.34, clearcoatRoughness: 0.19, clearcoatRoughnessMap: getMetalTextures().oil })
+    : new THREE.MeshStandardMaterial(finish);
   mat.userData.surface = surface; return mat;
 }
 
@@ -93,11 +101,12 @@ function rod(a, b, radius, mat) {
 }
 
 function machinedGear(teeth, radius, color, thickness = 0.32, internal = false, options = {}) {
+  const { lubricated = true, ...geometry } = options;
   return createMachinedGear({ teeth, pitchRadius: radius, width: thickness, internal, helixDegrees: internal ? -20 : 25, boreRadius: Math.min(0.18, radius * 0.32),
-    steelMaterial: material(color, { bumpMap: getMetalTextures().lathed, bumpScale: 0.004, roughness: 0.23, surface: 'recessed machined gear web' }),
-    flankMaterial: material(color, { bumpMap: getMetalTextures().brushed, bumpScale: 0.002, roughness: 0.27, surface: 'ground involute tooth flanks' }),
-    faceMaterial: material(color, { bumpMap: getMetalTextures().lathed, bumpScale: 0.004, roughness: 0.21, surface: 'involute helical machined steel' }),
-    darkMaterial: material(0x4b535c, { roughness: 0.27, surface: 'gear retaining rings' }), ...options });
+    steelMaterial: material(0x626b73, { bumpMap: getMetalTextures().lathed, bumpScale: 0.006, roughness: 0.43, surface: 'recessed machined gear web' }),
+    flankMaterial: material(0x9da7b0, { bumpScale: 0.003, roughness: 0.24, lubricated, surface: 'ground involute tooth flanks' }),
+    faceMaterial: material(color, { bumpMap: getMetalTextures().lathed, bumpScale: 0.0055, roughness: 0.32, surface: 'involute helical machined steel' }),
+    darkMaterial: material(0x3a4249, { roughness: 0.4, surface: 'gear retaining rings' }), ...geometry });
 }
 
 function clutchPack(color, radius = 0.68, count = 6, boreRadius = 0.16) {
@@ -112,32 +121,43 @@ function clutchPack(color, radius = 0.68, count = 6, boreRadius = 0.16) {
   const drivenHub = annulus(Math.max(0.26, boreRadius + 0.105), boreRadius, count * 0.08 + 0.18, material(C.dark));
   group.add(drivenHub); group.userData.drivenHub = drivenHub;
   // A cut-open splined drum reveals the alternating steel and friction discs.
-  const drum = annulus(radius + 0.115, radius + 0.065, count * 0.08 + 0.17, material(0x5e6873, { surface: 'cut-open wet clutch steel drum' }), Math.PI * 0.76);
-  group.add(drum);
-  const end = annulus(radius + 0.13, radius * 0.53, 0.055, material(C.steel)); end.position.x = -count * 0.04 - 0.1; group.add(end);
+  const cut = new THREE.Group(), window = Math.PI * 0.76;
+  group.add(cut);
+  const drum = annulus(radius + 0.115, radius + 0.065, count * 0.08 + 0.17, material(0x5e6873, { lubricated: true, surface: 'cut-open wet clutch steel drum' }), window);
+  cut.add(drum);
+  const end = annulus(radius + 0.13, radius * 0.53, 0.055, material(C.steel), window); end.position.x = -count * 0.04 - 0.1; cut.add(end);
+  cut.userData.fixedCut = true;
   for (let j = 0; j < 28; j += 1) {
     const a = j * TAU / 28;
-    if (Math.cos(a) < -0.43) continue;
+    if (Math.sin(a) > Math.cos(window * 0.5)) continue;
     const rib = new THREE.Mesh(new THREE.BoxGeometry(count * 0.08 + 0.16, 0.028, 0.035), material(C.steel));
-    rib.position.set(0, Math.cos(a) * (radius + 0.124), Math.sin(a) * (radius + 0.124)); rib.rotation.x = a; group.add(rib);
+    rib.position.set(0, Math.cos(a) * (radius + 0.115), Math.sin(a) * (radius + 0.115)); rib.rotation.x = a; cut.add(rib);
   }
   for (let j = 0; j < 8; j += 1) {
     const a = j * TAU / 8, port = torus(0.022, 0.006, material(0x252b31));
-    port.position.set(-count * 0.04 - 0.135, Math.cos(a) * radius * 0.72, Math.sin(a) * radius * 0.72); group.add(port);
+    if (Math.sin(a) > Math.cos(window * 0.5)) continue;
+    port.position.set(-count * 0.04 - 0.135, Math.cos(a) * radius * 0.72, Math.sin(a) * radius * 0.72); cut.add(port);
   }
   return group;
 }
 
 function castFork(radius = 0.38, thickness = 0.075, side = 1) {
-  const shape = new THREE.Shape(), start = -Math.PI * 0.82, end = Math.PI * 0.82;
-  shape.absarc(0, 0, radius + 0.07, start, end, false);
-  shape.lineTo(Math.cos(end) * (radius - 0.015), Math.sin(end) * (radius - 0.015));
-  shape.absarc(0, 0, radius - 0.015, end, start, true); shape.closePath();
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: true, bevelThickness: 0.012, bevelSize: 0.012, bevelSegments: 2, curveSegments: 36 });
-  geo.translate(0, 0, -thickness / 2); geo.rotateY(Math.PI / 2);
-  const fork = new THREE.Group(); fork.add(new THREE.Mesh(geo, material(0x676f76, { roughness: 0.34, surface: 'cast shift fork' })));
-  fork.add(rod(point(0, radius + 0.04, 0), point(0, 0.77, side * 0.52), 0.065, material(C.steel)));
-  const eye = annulus(0.12, 0.065, 0.16, material(C.steel)); eye.position.set(0, 0.77, side * 0.52); fork.add(eye); return fork;
+  const fork = new THREE.Group();
+  const casting = material(0x69747a, { roughness: 0.63, bumpScale: 0.008, surface: 'cast shift fork' });
+  fork.add(annulus(radius + 0.074, radius + 0.012, thickness, casting, Math.PI * 0.55));
+  fork.add(rod(point(0, radius + 0.045, 0), point(0, 0.77, side * 0.52), 0.065, casting));
+  const eye = annulus(0.125, 0.065, 0.17, casting);
+  const liner = annulus(0.086, 0.061, 0.183, material(C.steel, { surface: 'shift fork guide bushing' }));
+  eye.position.set(0, 0.77, side * 0.52);
+  eye.add(liner); fork.add(eye);
+  const padMaterial = material(0x9d815c, { roughness: 0.56, metalness: 0.68, surface: 'synchronizer fork wear shoe' });
+  const openEdge = Math.PI * 0.275, shoeSpan = 0.22;
+  for (const end of [-1, 1]) {
+    const pad = annulus(radius + 0.026, radius - 0.024, thickness * 0.72, padMaterial, TAU - shoeSpan);
+    pad.rotation.x = Math.PI + end * (openEdge + shoeSpan * 0.5);
+    fork.add(pad);
+  }
+  return fork;
 }
 
 function synchroCone(radius, sign = 1) {
@@ -168,6 +188,42 @@ function roundedShape(width, height, radius = 0.4) {
   s.lineTo(x, y + radius); s.quadraticCurveTo(x, y, x + radius, y); return s;
 }
 
+function oilSump(length, width) {
+  const pan = new THREE.Group();
+  const cast = material(0x4d5659, { metalness: 0.74, roughness: 0.62, bumpScale: 0.012, surface: 'cast aluminum oil pan' });
+  const milled = material(0x828587, { roughness: 0.41, surface: 'machined sump flange' });
+  const oil = material(0x8a5b29, { metalness: 0.15, roughness: 0.19, lubricated: true, bumpScale: 0.001, transparent: true, opacity: 0.78, depthWrite: false, surface: 'oil volume' });
+  function layer(shape, height, base, finish) {
+    const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: true, bevelSize: 0.018, bevelThickness: 0.016, bevelSegments: 2, curveSegments: 8 });
+    geometry.rotateX(-Math.PI / 2);
+    const mesh = new THREE.Mesh(geometry, finish);
+    mesh.position.y = base; mesh.castShadow = !finish.transparent; mesh.receiveShadow = true;
+    pan.add(mesh);
+    return mesh;
+  }
+  const perimeter = (w, d, radius) => roundedShape(w, d, radius).getPoints(8).slice(0, -1);
+  const outer = perimeter(length, width, 0.28), inner = perimeter(length - 0.20, width - 0.20, 0.18);
+  const front = outer.findIndex((vertex, i) => vertex.y === -width / 2 && outer[(i + 1) % outer.length].y === vertex.y && vertex.distanceTo(outer[(i + 1) % outer.length]) > length * 0.5);
+  const rest = contour => contour.slice(front + 1).concat(contour.slice(0, front + 1));
+  const profile = new THREE.Shape().setFromPoints([...rest(outer), ...rest(inner).reverse()]); profile.closePath();
+  const filler = new THREE.Shape().setFromPoints([outer[front], outer[front + 1], inner[front + 1], inner[front]]); filler.closePath();
+  layer(roundedShape(length - 0.09, width - 0.09, 0.25), 0.10, -0.31, cast);
+  layer(profile, 0.40, -0.23, cast);
+  layer(profile, 0.036, 0.17, milled);
+  const closedWall = new THREE.Group();
+  closedWall.add(layer(filler, 0.40, -0.23, cast), layer(filler, 0.036, 0.17, milled));
+  pan.add(closedWall);
+  layer(roundedShape(length - 0.25, width - 0.25, 0.16), 0.14, -0.205, oil);
+  for (const z of [-1, 1]) for (const x of [-0.32, -0.12, 0.12, 0.32]) {
+    const bolt = cylinder(0.064, 0.065, milled, 6);
+    bolt.rotation.z = 0; bolt.position.set(length * x, 0.22, z * (width / 2 - 0.06));
+    (z > 0 ? closedWall : pan).add(bolt);
+  }
+  const plug = cylinder(0.10, 0.15, milled, 6);
+  plug.position.set(length / 2, -0.14, 0.37); pan.add(plug);
+  return { pan, closedWall };
+}
+
 export function createTransmissionScene(container, { onSelectPart = () => {} } = {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x07111b);
@@ -178,22 +234,24 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.06;
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.domElement.className = 'transmission-canvas'; renderer.domElement.setAttribute('aria-label', '변속기 구조 3D 보기. 드래그로 회전하고 부품을 클릭하세요.');
+  renderer.domElement.setAttribute('aria-description', '화살표는 동력 방향을 나타냅니다. 화살표 이동 속도는 관찰용 배율입니다.');
+  renderer.domElement.title = '화살표는 동력 방향을 나타냅니다. 이동 속도는 관찰용 배율입니다.';
   container.appendChild(renderer.domElement);
   const camera = new THREE.PerspectiveCamera(36, 1, 0.05, 100);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true; controls.dampingFactor = 0.07; controls.minDistance = 1.2; controls.maxDistance = 40;
   controls.maxPolarAngle = Math.PI * 0.89; controls.target.set(0, 0, 0);
   const environmentGenerator = new THREE.PMREMGenerator(renderer), studio = new RoomEnvironment();
-  let environmentTarget = environmentGenerator.fromScene(studio, 0.035); scene.environment = environmentTarget.texture; scene.environmentIntensity = 0.72; studio.dispose(); environmentGenerator.dispose();
-  const ambient = new THREE.HemisphereLight(0xe5eaf0, 0x24272b, 0.5); scene.add(ambient);
-  const keyLight = new THREE.DirectionalLight(0xf3f7ff, 2.1); keyLight.position.set(-4, 10, 7); keyLight.castShadow = true;
+  let environmentTarget = environmentGenerator.fromScene(studio, 0.035); scene.environment = environmentTarget.texture; scene.environmentIntensity = 0.86; studio.dispose(); environmentGenerator.dispose();
+  const ambient = new THREE.HemisphereLight(0xe7ebf0, 0x252b32, 0.38); scene.add(ambient);
+  const keyLight = new THREE.DirectionalLight(0xfff2df, 1.75); keyLight.position.set(-5, 9, 6); keyLight.castShadow = true;
   keyLight.shadow.mapSize.set(1536, 1536); keyLight.shadow.camera.left = -9; keyLight.shadow.camera.right = 9; keyLight.shadow.camera.top = 7; keyLight.shadow.camera.bottom = -7;
   keyLight.shadow.normalBias = 0.035; scene.add(keyLight);
-  const blueLight = new THREE.DirectionalLight(0xe1e8f1, 1.4); blueLight.position.set(5, 3, -6); scene.add(blueLight);
-  const warmLight = new THREE.DirectionalLight(0xeee8df, 0.55); warmLight.position.set(-6, 2, -2); scene.add(warmLight);
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), material(0x0d1b25, { metalness: 0.3, roughness: 0.65, emissiveIntensity: 0 }));
+  const blueLight = new THREE.DirectionalLight(0xd9e8ff, 1.42); blueLight.position.set(5, 3, -6); scene.add(blueLight);
+  const warmLight = new THREE.DirectionalLight(0xe3edf8, 0.65); warmLight.position.set(3, 1, 7); scene.add(warmLight);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), material(0x101822, { metalness: 0.12, roughness: 0.86, emissiveIntensity: 0 }));
   floor.rotation.x = -Math.PI / 2; floor.position.y = -3.25; floor.receiveShadow = true; scene.add(floor);
-  const grid = new THREE.GridHelper(40, 80, 0x275269, 0x163143); grid.position.y = -3.24; grid.material.transparent = true; grid.material.opacity = 0.26; scene.add(grid);
+  const grid = new THREE.GridHelper(40, 80, 0x275269, 0x163143); grid.position.y = -3.24; grid.material.transparent = true; grid.material.opacity = 0.19; scene.add(grid);
   const assembly = new THREE.Group(); scene.add(assembly);
   const labelsLayer = document.createElement('div'); labelsLayer.className = 'scene-label-layer';
   Object.assign(labelsLayer.style, { position: 'absolute', inset: '0', pointerEvents: 'none', overflow: 'hidden', zIndex: '2' }); container.appendChild(labelsLayer);
@@ -210,7 +268,8 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   const qualityName = value => ['auto', 'high', 'balanced', 'low'].includes(value) ? value : 'auto';
   function gear(teeth, radius, color, thickness = 0.32, internal = false, options = {}) { return machinedGear(teeth, radius, color, thickness, internal, { ...options, detail: effectiveQuality }); }
   const pickRay = new THREE.Raycaster(), mouse = new THREE.Vector2();
-  let parts = new Map(), rotors = [], selectable = [], flowRoutes = [], particleMeshes = [], beltSegments = [], pulleyParts = null, preselectionMarkers = [], selectorForks = [], gearboxHousing = null;
+  let parts = new Map(), rotors = [], selectable = [], oilRoutes = [], powerTraces = [], beltSegments = [], pulleyParts = null, preselectionMarkers = [], selectorForks = [], gearboxHousing = null;
+  let beltTrace = null, beltInstances = null, stationaryCuts = [], converterLockPiston = null, sumpWall = null;
   let bearingDetails = [];
   let focusedPart = null;
   let type = 'mt', currentSnapshot = null, selected = null, pointerStart = null, lastPick = null, width = 1, height = 1, beltTravel = 0, lastFitExplode = -1, lastCategories = '';
@@ -268,7 +327,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
 
   function engine(x = -5.2, y = 0.9, z = 0, stubLength = 1.3, stubOffset = 0.5, inputPart = true, stubRadius = 0.14) {
     const g = new THREE.Group();
-    g.add(gear(72, 0.74, C.steel, 0.16, false, { helixDegrees: 0, boreRadius: 0.18 }));
+    g.add(gear(72, 0.74, C.steel, 0.16, false, { helixDegrees: 0, boreRadius: 0.18, lubricated: false }));
     g.add(annulus(0.68, 0.3, 0.18, material(C.steel, { bumpMap: getMetalTextures().lathed, bumpScale: 0.006, roughness: 0.2, surface: 'flywheel friction track' })));
     g.add(cylinder(0.27, 0.32, material(C.dark))); g.add(annulus(0.29, 0.18, 0.36, material(C.steel)));
     for (let i = 0; i < 8; i += 1) { const a = i * TAU / 8; const bolt = cylinder(0.045, 0.24, material(C.steel), 6); bolt.position.set(0.1, Math.cos(a) * 0.38, Math.sin(a) * 0.38); g.add(bolt); }
@@ -374,15 +433,9 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
   }
 
   function oilSystem(kind) {
-    const parallel = kind === 'mt' || kind === 'dct', panY = parallel ? -2.8 : -2.35, panLength = 5.4, pumpX = parallel ? -1.9 : -2.6;
-    const pan = new THREE.Group();
-    const wall = material(0x77818a, { transparent: true, opacity: 0.24, depthWrite: false, roughness: 0.31, surface: 'cast aluminum oil pan' });
-    const bottom = new THREE.Mesh(new THREE.BoxGeometry(panLength, 0.12, 2.55), wall.clone()); bottom.position.y = -0.29; pan.add(bottom);
-    for (const z of [-1.25, 1.25]) { const side = new THREE.Mesh(new THREE.BoxGeometry(panLength, 0.65, 0.09), wall.clone()); side.position.z = z; pan.add(side); }
-    for (const x of [-panLength / 2, panLength / 2]) { const end = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.65, 2.55), wall.clone()); end.position.x = x; pan.add(end); }
-    const fluid = new THREE.Mesh(new THREE.BoxGeometry(panLength - 0.2, 0.37, 2.32), material(0xde9e41, { physicalColor: true, metalness: 0.02, roughness: 0.1, transparent: true, opacity: 0.27, depthWrite: false, bumpMap: null, surface: 'oil volume' })); fluid.position.y = -0.04; pan.add(fluid);
-    for (let i = 0; i < 12; i += 1) { const x = -panLength / 2 + 0.28 + i * (panLength - 0.56) / 11; const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.09, 6), material(C.steel)); bolt.position.set(x, 0.34, 1.18); pan.add(bolt); }
-    const plug = cylinder(0.085, 0.16, material(C.steel), 6); plug.position.set(panLength / 2, -0.17, 0.8); pan.add(plug);
+    const parallel = kind === 'mt' || kind === 'dct', panY = parallel ? -2.8 : -2.15, pumpX = parallel ? -1.9 : -2.6;
+    const { pan, closedWall } = oilSump(kind === 'cvt' ? 4.85 : 5.4, kind === 'cvt' ? 2.48 : 2.35);
+    sumpWall = closedWall;
     addPart('oil-pan', pan, [0, panY, 0], [0, 0.02, 1.1], [-1.3, 0, 1.55], 0xde9e41);
     const connections = [];
     if (kind !== 'mt') {
@@ -425,7 +478,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     for (const coordinates of connections) {
       const curve = new THREE.CatmullRomCurve3(coordinates.map(p => point(...p)));
       if (kind !== 'mt') { const pipe = new THREE.Mesh(new THREE.TubeGeometry(curve, 30, 0.032, 7, false), material(C.dark, { roughness: 0.22, surface: 'schematic oil passage' })); pipeGroup.add(pipe); }
-      const r = route([], coordinates, 0xde9e41); r.oil = true; pipeGroup.add(r.line); r.line.material.opacity = kind === 'mt' ? 0.1 : 0.34;
+      const r = oilRoute(coordinates); pipeGroup.add(r.line); r.line.material.opacity = kind === 'mt' ? 0.1 : 0.34;
       r.beads.forEach(bead => { bead.scale.setScalar(0.65); bead.userData.category = 'lubrication'; });
     }
     addPart('oil-lines', pipeGroup, [0, 0, 0], [0, 0.1, 0.35], [-1.9, -1.2, 1.7], 0xde9e41, false);
@@ -445,16 +498,54 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     addPart('housing', gearboxHousing.group, [0, 0, 0], [0, 0.1, -0.1], [0.3, 2.1, -0.7], C.blue, false);
   }
 
-  function route(ids, coordinates, color) {
+  function oilRoute(coordinates) {
+    const color = 0xde9e41;
     const points = coordinates.map(p => point(...p));
     const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal');
     const line = new THREE.Mesh(new THREE.TubeGeometry(curve, 64, 0.021, 6, false), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.26, depthWrite: false }));
     assembly.add(line);
     const beads = [];
     for (let i = 0; i < 8; i += 1) {
-      const bead = new THREE.Mesh(new THREE.SphereGeometry(0.051, 8, 6), new THREE.MeshBasicMaterial({ color })); assembly.add(bead); beads.push(bead); particleMeshes.push(bead);
+      const bead = new THREE.Mesh(new THREE.SphereGeometry(0.051, 8, 6), new THREE.MeshBasicMaterial({ color })); assembly.add(bead); beads.push(bead);
     }
-    const result = { ids, curve, color, line, beads, progress: 0 }; flowRoutes.push(result); return result;
+    const result = { curve, line, beads, progress: 0 }; oilRoutes.push(result); return result;
+  }
+
+  function powerTrace(id, ports, points, color, power) {
+    const trace = createPowerTrace({ id, ports, points, color, power });
+    powerTraces.push(trace); assembly.add(trace.group);
+    return trace;
+  }
+
+  function parallelPowerTraces(dual, gearX, reverseX, finalX, engineX, upperY, lowerY) {
+    const clutch = dual ? 'input' : 'clutch';
+    const inlet = dual ? -3.9 : -3.7;
+    const shaftPoint = (x, y) => [x, y, 0.29];
+    powerTrace('engine-input', ['engine', clutch], [shaftPoint(engineX - 0.47, upperY), shaftPoint(inlet, upperY)], C.blue, s => s.inputPowerKW);
+    for (const [gearId, x] of Object.entries({ ...gearX, R: reverseX })) {
+      const bank = ['1', '3', '5'].includes(gearId) ? 'a' : 'b';
+      const coupling = dual ? `clutch-${bank}` : 'clutch';
+      const shaft = dual ? `shaft-${bank}` : 'input-shaft';
+      const pair = `gear-${gearId}`;
+      const inputKW = s => {
+        if (!dual) return s.gear === gearId ? rpmPower(s.inputTorque, s.partRpm[shaft]) : 0;
+        const selectedGear = bank === 'a' ? s.selectedA : s.selectedB;
+        const clampLoad = bank === 'a' ? s.clutchA : s.clutchB;
+        return selectedGear === gearId ? rpmPower(s.commandTorque * clampLoad, s.partRpm[shaft]) : 0;
+      };
+      const shaftZ = dual ? (bank === 'a' ? 0.43 : 0.12) : 0.29;
+      const clutchX = dual ? (bank === 'a' ? -3.5 : -2.85) : -3.62;
+      const input = [x, upperY, shaftZ], output = [x, lowerY, shaftZ];
+      const path = [input];
+      const ports = [pair];
+      if (gearId === 'R') { path.push([x, 0.4104, 0.527913]); ports.push('reverse-idler'); }
+      path.push(output, shaftPoint(finalX, lowerY));
+      powerTrace(`${pair}-input`, [coupling, shaft, pair], [shaftPoint(inlet, upperY), [clutchX, upperY, shaftZ], input], C.blue, inputKW);
+      powerTrace(`${pair}-mesh`, [...ports, 'selector', 'output-shaft'], path, C.amber, inputKW);
+    }
+    powerTrace('final-output', ['final-drive', 'output'], [
+      shaftPoint(finalX, lowerY), shaftPoint(finalX, lowerY - 0.92), shaftPoint(4.45, lowerY - 0.92),
+    ], C.amber, s => s.outputPowerKW);
   }
 
   function buildParallel(dual) {
@@ -468,8 +559,10 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       const b = clutchPack(C.blue, 0.83, 6, 0.24); addPart('clutch-b', b, [-2.85, upperY, 0], [0, -0.35, -0.6], [0.15, 0.75, -0.6], C.blue); rotate(b, 'clutch-b');
       const inputRotor = parts.get('input').group.children[0], drumOffset = -3.20 - parts.get('input').base.x;
       const commonDrum = annulus(1.05, 0.985, 1.42, material(0x626d79, { surface: 'common DCT engine driven hollow input drum' }), Math.PI * 0.8);
-      commonDrum.position.x = drumOffset; inputRotor.add(commonDrum);
-      const driveWeb = annulus(1.055, 0.15, 0.065, material(C.steel), Math.PI * 0.8); driveWeb.position.x = -3.91 - parts.get('input').base.x; inputRotor.add(driveWeb);
+      const drumSection = new THREE.Group(); drumSection.userData.fixedCut = true;
+      commonDrum.position.x = drumOffset; drumSection.add(commonDrum);
+      const driveWeb = annulus(1.055, 0.15, 0.065, material(C.steel), Math.PI * 0.8); driveWeb.position.x = -3.91 - parts.get('input').base.x; drumSection.add(driveWeb);
+      inputRotor.add(drumSection);
       simpleShaft('shaft-a', -0.70, upperY, 0, 6.2, C.amber, 'shaft-a', 0.13, [0, 0.2, 0.25], false);
       // The short outer shaft ends before the odd-gear bank. Its bore is real,
       // exposing the long inner shaft when looking from either axial end.
@@ -497,22 +590,33 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       addPart('gear-' + number, g, [x, 0, 0], [(x / 1.65) * 0.6, number % 2 ? 0.16 : -0.12, 0], [0, lowerY - pair[1] * 0.025 - 0.26, 0.5], color);
       rotate(input, 'gear-' + number + '-input'); rotate(output, 'gear-' + number + '-output');
       if (dual) { const marker = torus(pair[1] * 0.025 + 0.07, 0.011, new THREE.MeshBasicMaterial({ color: C.purple, transparent: true, opacity: 0.58, depthWrite: false })); marker.position.set(0.15, lowerY, 0); marker.visible = false; g.add(marker); preselectionMarkers.push({ id: 'gear-' + number, mesh: marker }); }
-      route(['gear-' + number], [[engineX - 0.2, upperY, 0], [x, upperY, 0]], C.blue);
-      route(['gear-' + number], [[x, upperY, 0], [x, lowerY, 0], [finalX, lowerY, 0], [finalX, lowerY - 0.92, 0], [4.45, lowerY - 0.92, 0]], C.amber);
     }
     const selector = new THREE.Group();
-    const collars = dual ? [...bankOrder.map(n => ({ x: gearX[n] + (n % 2 ? 0.32 : -0.32), gears: [String(n)], side: n % 2 ? 1 : -1, direction: n % 2 ? -1 : 1 })), { x: reverseX + 0.32, gears: ['R'], side: -1, direction: -1 }]
-      : [0, 1, 2].map(i => ({ x: (gearX[i * 2 + 1] + gearX[i * 2 + 2]) / 2, gears: [String(i * 2 + 1), String(i * 2 + 2)], side: 1 }));
+    const collars = dual ? [
+      { x: (reverseX + gearX[2]) * 0.5, gears: ['R', '2'], side: -1, travel: [-0.065, 0.065] },
+      ...bankOrder.filter(n => n !== 2).map(n => ({
+        x: gearX[n] + (n % 2 ? 0.32 : -0.32), gears: [String(n)], side: n % 2 ? 1 : -1, travel: [n % 2 ? -0.10 : 0.10],
+      })),
+    ] : [
+      ...[0, 1, 2].map(i => ({ x: (gearX[i * 2 + 1] + gearX[i * 2 + 2]) * 0.5, gears: [String(i * 2 + 1), String(i * 2 + 2)], side: 1, travel: [-0.14, 0.14] })),
+      { x: reverseX + 0.32, gears: ['R'], side: 1, travel: [-0.1] },
+    ];
     for (const entry of collars) {
       const collar = new THREE.Group(), rotor = new THREE.Group(), slider = annulus(0.37, 0.19, dual ? 0.1 : 0.15, material(C.steel, { surface: 'splined synchronizer sliding sleeve' }));
       rotor.add(slider);
       for (let j = 0; j < 28; j += 1) { const a = j * TAU / 28, spline = new THREE.Mesh(new THREE.BoxGeometry(dual ? 0.13 : 0.18, 0.018, 0.027), material(C.steel)); spline.position.set(0, Math.cos(a) * 0.36, Math.sin(a) * 0.36); spline.rotation.x = a; rotor.add(spline); }
       for (const sign of [-1, 1]) { const groove = torus(0.378, 0.011, material(C.dark)); groove.position.x = sign * 0.031; rotor.add(groove); }
       collar.add(rotor, castFork(0.38, 0.075, entry.side)); rotate(rotor, 'output-shaft');
-      collar.position.x = entry.x; selector.add(collar); selectorForks.push({ group: collar, base: entry.x, gears: entry.gears, dual, direction: entry.direction });
+      collar.position.x = entry.x; selector.add(collar); selectorForks.push({ group: collar, base: entry.x, gears: entry.gears, dual, travel: entry.travel });
     }
-    selector.add(rod(point(-2.3, 0.77, 0.52), point(2.28, 0.77, 0.52), 0.06, material(C.steel)));
-    if (dual) selector.add(rod(point(-2.38, 0.77, -0.52), point(1.85, 0.77, -0.52), 0.06, material(C.steel)));
+    const railMaterial = material(0x9ea5ad, { roughness: 0.25, lubricated: true, surface: 'ground selector rail' });
+    for (const [z, left, right] of dual ? [[0.52, -0.25, 2.34], [-0.52, -2.38, 0.14]] : [[0.52, -2.30, 2.74]]) {
+      selector.add(rod(point(left, 0.77, z), point(right, 0.77, z), 0.06, railMaterial));
+      for (const x of [left + 0.08, right - 0.08]) {
+        const stop = annulus(0.104, 0.056, 0.13, material(C.dark, { surface: 'selector rail stop collar' }));
+        stop.position.set(x, 0.77, z); selector.add(stop);
+      }
+    }
     addPart('selector', selector, [0, lowerY, 0], [0, -0.55, 1.1], [0, 0.4, 1.15], C.purple, !dual);
     // Spur reverse gears have two external meshes through an offset idler.
     const reversePair = new THREE.Group();
@@ -520,7 +624,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     const reverseOutput = gear(62, 1.24, C.red, 0.18, false, { helixDegrees: 0, boreRadius: 0.19 }); reverseOutput.position.y = lowerY;
     const idlerPhase = externalGearDrivenPhase({ driverTeeth: 18, drivenTeeth: 18, centerAngleRad: Math.atan2(0.527913, 0.4104 - upperY) });
     reverseOutput.rotation.x = externalGearDrivenPhase({ driverTeeth: 18, drivenTeeth: 62, centerAngleRad: Math.atan2(-0.527913, lowerY - 0.4104), driverAngleRad: idlerPhase });
-    if (dual) { const dog = gear(24, 0.31, C.steel, 0.06, false, { helixDegrees: 0, boreRadius: 0.195 }); dog.position.set(0.2, lowerY, 0); reversePair.add(dog); rotate(dog, 'gear-R-output'); }
+    const reverseDog = gear(24, 0.31, C.steel, 0.06, false, { helixDegrees: 0, boreRadius: 0.195 }); reverseDog.position.set(0.17, lowerY, 0); reversePair.add(reverseDog); rotate(reverseDog, 'gear-R-output');
     reversePair.add(reverseInput, reverseOutput); addPart('gear-R', reversePair, [reverseX, 0, 0], [dual ? -0.85 : 0.85, 0.05, 0], [0, -2.57, 0.2], C.red, false); rotate(reverseInput, 'gear-R-input'); rotate(reverseOutput, 'gear-R-output');
     const reverse = gear(18, 0.36, C.red, 0.18, false, { helixDegrees: 0, boreRadius: 0.105 }); addPart('reverse-idler', reverse, [reverseX, 0.4104, 0.527913], [dual ? -0.85 : 0.85, 0.1, 0.75], [0, 0.65, 0.4], C.red); rotate(reverse, 'reverse-idler');
     reverse.rotation.x = idlerPhase;
@@ -533,8 +637,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     finalDrive.add(counterGear, axleGear); addPart('final-drive', finalDrive, [finalX, lowerY - 0.46, 0], [0.9, -0.5, 0], [0.15, -1, 0], C.green, false); rotate(counterGear, 'output-shaft'); rotate(axleGear, 'output');
     const output = simpleShaft('output', 3.6, lowerY - 0.92, 0, 1.6, C.green, 'output', 0.17, [1, -0.5, 0], true);
     const flangeOut = annulus(0.31, 0.17, 0.12, material(C.steel)); flangeOut.position.x = 0.77; output.children[0].add(flangeOut);
-    route(['gear-R', 'reverse-idler'], [[engineX - 0.2, upperY, 0], [reverseX, upperY, 0]], C.blue);
-    route(['gear-R', 'reverse-idler'], [[reverseX, upperY, 0], [reverseX, 0.4104, 0.527913], [reverseX, lowerY, 0], [finalX, lowerY, 0], [finalX, lowerY - 0.92, 0], [4.45, lowerY - 0.92, 0]], C.amber);
+    parallelPowerTraces(dual, gearX, reverseX, finalX, engineX, upperY, lowerY);
     if (dual) for (const branch of ['a', 'b']) {
       const pack = parts.get('clutch-' + branch).group;
       for (const layer of pack.userData.stackLayers || []) if (layer.friction) rotors.push({ object: layer.mesh, key: 'clutch-' + branch + '-friction', rpmKey: 'shaft-' + branch, subtract: 'clutch-' + branch, axis: 'x', multiplier: 1 });
@@ -542,8 +645,25 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     }
   }
   function coneSheave(color, sign, inspection = false) {
-    const profile = [new THREE.Vector2(0.22, -0.27), new THREE.Vector2(1.47, -0.27), new THREE.Vector2(1.49, -0.0382), new THREE.Vector2(0.23, 0.05), new THREE.Vector2(0.22, -0.27)];
-    const mesh = new THREE.Mesh(new THREE.LatheGeometry(profile, 112, inspection ? Math.PI * 0.48 : 0, inspection ? Math.PI * 1.27 : TAU), material(color, { bumpMap: getMetalTextures().lathed, bumpScale: 0.0025, roughness: 0.18, side: THREE.DoubleSide, surface: 'machined conical pulley sheave' })); mesh.rotation.z = sign * Math.PI / 2; mesh.castShadow = true; return mesh;
+    const profile = [[0.22, -0.27], [1.43, -0.27], [1.47, -0.255], [1.49, -0.0582], [1.47, -0.0368], [0.23, 0.05]]
+      .map(([radius, axial]) => new THREE.Vector2(radius, axial));
+    const start = inspection ? Math.PI * 1.865 : 0, span = inspection ? Math.PI * 1.27 : TAU;
+    const surface = material(color, { bumpMap: getMetalTextures().brushed, bumpScale: 0.004, roughness: 0.25, lubricated: true, side: THREE.DoubleSide, surface: 'machined conical pulley sheave' });
+    const sheave = new THREE.Group();
+    sheave.rotation.z = sign * Math.PI / 2;
+    const mesh = new THREE.Mesh(new THREE.LatheGeometry([...profile, profile[0]], 96, start, span), surface);
+    mesh.castShadow = true; mesh.receiveShadow = true; sheave.add(mesh);
+    if (inspection) {
+      const positions = [], faces = THREE.ShapeUtils.triangulateShape(profile, []);
+      for (const angle of [start, start + span]) for (const face of faces) for (const vertex of face) {
+        const { x: radius, y: axial } = profile[vertex];
+        positions.push(radius * Math.sin(angle), axial, radius * Math.cos(angle));
+      }
+      const cut = new THREE.BufferGeometry();
+      cut.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); cut.computeVertexNormals();
+      sheave.add(new THREE.Mesh(cut, material(0xa79a88, { side: THREE.DoubleSide, bumpMap: null, roughness: 0.61, surface: 'sectioned CVT sheave wall' })));
+    }
+    return sheave;
   }
 
   function buildCVT() {
@@ -554,13 +674,17 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       const g = new THREE.Group();
       const rotor = new THREE.Group();
       const a = coneSheave(color, -1, true), b = coneSheave(color, 1); a.position.x = -0.24; b.position.x = 0.24;
-      rotor.add(a, b);
+      g.add(a); rotor.add(b);
       const contactRing = torus(1, 0.017, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false }));
       contactRing.position.x = -0.55; rotor.add(contactRing);
       rotor.add(cylinder(0.2, 2.1, material(C.steel)));
       for (const sign of [-1, 1]) {
         const shoulder = annulus(0.5, 0.205, 0.28, material(C.steel, { surface: 'pulley spline hub and piston support' })); shoulder.position.x = sign * 0.55; rotor.add(shoulder);
-        for (let i = 0; i < 16; i += 1) { const angle = i * TAU / 16, rib = rod(point(sign * 0.35, Math.cos(angle) * 0.45, Math.sin(angle) * 0.45), point(sign * 0.35, Math.cos(angle) * 1.30, Math.sin(angle) * 1.30), 0.022, material(0x64717c)); if (sign === 1) rotor.add(rib); }
+        if (sign === 1) for (let i = 0; i < 16; i += 1) {
+          const angle = i * TAU / 16;
+          const rib = rod(point(0.35, Math.cos(angle) * 0.45, Math.sin(angle) * 0.45), point(0.35, Math.cos(angle) * 1.30, Math.sin(angle) * 1.30), 0.022, material(0x64717c));
+          rotor.add(rib);
+        }
         const retention = annulus(0.36, 0.2, 0.07, material(0x606a75)); retention.position.x = sign * 0.9; rotor.add(retention);
       }
       g.add(rotor); addPart(id, g, [0, 0, center], [0, 0, center < 0 ? -0.55 : 0.55], [0, 1.8, 0], color);
@@ -569,20 +693,33 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       rotate(rotor, id); pulleyParts.push({ id, group: g, sheaves: [a, b], contactRing });
     }
     const belt = new THREE.Group();
-    const beltMat = material(0x646d77, { metalness: 0.94, roughness: 0.27, surface: 'stamped CVT steel belt element' });
+    const beltMat = material(0x85898c, { roughness: 0.32, lubricated: true, surface: 'stamped CVT steel belt element' });
     const segmentShape = new THREE.Shape(); segmentShape.moveTo(-0.125, -0.039); segmentShape.lineTo(0.125, -0.039); segmentShape.lineTo(0.12, 0.018); segmentShape.lineTo(0.045, 0.044); segmentShape.lineTo(-0.045, 0.044); segmentShape.lineTo(-0.12, 0.018); segmentShape.closePath();
     const beltGeometry = new THREE.ExtrudeGeometry(segmentShape, { depth: 0.104, bevelEnabled: true, bevelSize: 0.002, bevelThickness: 0.002, bevelSegments: 1 }); beltGeometry.translate(0, 0, -0.052);
-    for (let i = 0; i < 142; i += 1) {
-      const segment = new THREE.Mesh(beltGeometry, beltMat); segment.castShadow = true; belt.add(segment); beltSegments.push(segment);
-    }
+    const bands = [-0.079, 0.079].map(x => {
+      const box = new THREE.BoxGeometry(0.041, 0.017, 0.106), band = box.toNonIndexed(); box.dispose();
+      return band.translate(x, 0.024, 0);
+    });
+    const bandGeometry = mergeGeometries(bands);
+    const element = mergeGeometries([beltGeometry, bandGeometry], true);
+    for (const source of [...bands, bandGeometry, beltGeometry]) source.dispose();
+    const tensileSteel = material(0xb2bcc2, { roughness: 0.22, lubricated: true, surface: 'stacked CVT tensile bands' });
+    beltSegments = Array.from({ length: 142 }, () => new THREE.Object3D());
+    beltInstances = new THREE.InstancedMesh(element, [beltMat, tensileSteel], beltSegments.length);
+    beltInstances.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    beltInstances.castShadow = true; beltInstances.receiveShadow = true;
+    belt.add(beltInstances);
     addPart('belt', belt, [0, 0, 0], [0, 0.22, 0], [0, 1.92, 0], C.blue); pulleyAssembly.attach(belt); belt.position.set(0, 0, 0); belt.rotation.set(0, 0, 0);
     const reverse = new THREE.Group(), reverseRotor = clutchPack(C.purple, 0.55, 4); reverse.add(reverseRotor); addPart('reverse-unit', reverse, [-1.68, 0, -1.65], [-0.4, 0, -0.55], [0, -0.8, -0.25], C.purple); reverse.rotation.y = Math.PI / 2; rotate(reverseRotor, 'reverse-unit');
     engine(-1.68, 0, -3.5); parts.get('engine').group.rotation.y = Math.PI / 2; parts.get('engine').explode.set(-0.35, 0, -0.85);
     const inputShaft = parts.get('input'); inputShaft.base.set(-1.68, 0, -2.98); inputShaft.group.position.copy(inputShaft.base); inputShaft.group.rotation.y = Math.PI / 2; inputShaft.explode.set(-0.35, 0, -0.55);
     const outshaft = simpleShaft('output', 1.68, 0, 1.9, 1.3, C.green, 'output', 0.16, [0.55, 0, 0.5], true); outshaft.rotation.y = Math.PI / 2;
-    route(['primary', 'secondary'], [[-1.68, 0, -3.6], [-1.68, 0, 0]], C.blue);
-    route(['primary', 'secondary'], [[-1.68, 0, 0], [0, 1.0, 0], [1.68, 0, 0], [1.68, 0, 2.5]], C.amber);
     directionClutches();
+    const driveKW = s => rpmPower(s.inputTorque, Math.abs(s.partRpm.primary));
+    powerTrace('cvt-forward', ['engine', 'forward-clutch', 'primary'], [[-1.68, 0.37, -3.5], [-1.68, 0.37, -2.15], [-1.68, 0, 0.15]], C.blue, s => s.gear === 'D' ? driveKW(s) : 0);
+    powerTrace('cvt-reverse', ['engine', 'reverse-clutch', 'primary'], [[-1.68, 0.37, -3.5], [-1.68, 0.37, -2.82], [-1.68, 0, 0.15]], C.blue, s => s.gear === 'R' ? driveKW(s) : 0);
+    beltTrace = powerTrace('cvt-belt', ['primary', 'belt', 'secondary'], [[-1.68, 0, 0.15], [-1.68, 1, 0.15], [1.68, 1, 0.15], [1.68, 0, 0.15]], C.amber, driveKW);
+    powerTrace('cvt-output', ['secondary', 'output'], [[1.68, 0, 0.15], [1.68, 0, 2.5]], C.amber, s => s.outputPowerKW);
   }
 
   function converter() {
@@ -605,8 +742,15 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       }
       addPart(ids[j], rotor, [-3.35 + j * 0.34, 0, 0], [-(2 - j) * 0.48, j === 2 ? -0.55 : 0, j === 2 ? 0.3 : 0], [0, radius + 0.23, j * 0.18], colors[j]); rotate(rotor, ids[j]);
     }
-    group.add(annulus(1.115, 1.055, 0.85, material(0x626d78, { surface: 'sectioned converter steel cover' }), Math.PI * 0.8));
-    for (const sign of [-1, 1]) { const end = annulus(1.12, 0.28, 0.07, material(C.steel), Math.PI * 0.8); end.position.x = sign * 0.44; group.add(end); }
+    const section = new THREE.Group(); section.userData.fixedCut = true; group.add(section);
+    const cut = Math.PI * 0.92;
+    section.add(annulus(1.115, 1.055, 0.85, material(0x626d78, { surface: 'sectioned converter steel cover' }), cut));
+    for (const sign of [-1, 1]) { const end = annulus(1.12, 0.28, 0.07, material(C.steel), cut); end.position.x = sign * 0.44; section.add(end); }
+    converterLockPiston = new THREE.Group();
+    const friction = annulus(0.92, 0.79, 0.028, material(0x786557, { metalness: 0.38, roughness: 0.61, surface: 'converter lockup friction track' }));
+    friction.position.x = -0.024;
+    converterLockPiston.add(friction, annulus(0.94, 0.18, 0.029, material(0x747b83, { surface: 'converter lockup piston' })));
+    parts.get('turbine').group.add(converterLockPiston);
     const hub = annulus(0.27, 0.16, 0.96, material(C.steel)); group.add(hub); rotate(group, 'pump');
     addPart('converter', group, [-3.2, 0, 0], [-0.65, 0, -0.35], [0, 1.35, -0.35], C.blue, false);
   }
@@ -666,13 +810,17 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       const inverter = new THREE.Group(); const box = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.32, 0.85), material(C.dark)); inverter.add(box);
       for (let i = 0; i < 7; i += 1) { const fin = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.72), material(C.steel)); fin.position.set(-0.45 + i * 0.15, 0.19, 0); inverter.add(fin); }
       addPart('inverter', inverter, [-1.8, 2.5, -1.6], [-0.4, 0.6, -0.6], [0, 0.43, 0], C.blue);
-      route(['carrier'], [[-5.3, 0, 0], [-2.3, 0, 0], [0.2, 0.85, 0]], C.blue).power = s => s.enginePowerKW;
-      route(['ring'], [[0.2, 0.85, 0], [0.2, 1.55, 0], [1.4, 0, 0], [5.45, 0, 0]], C.amber).power = s => s.enginePowerKW - s.mg1PowerKW;
-      route(['mg1'], [[0.2, 0, 0], [-1.67, 0, 0]], C.blue).power = s => s.mg1PowerKW;
-      route(['mg1'], [[-1.67, 0.7, 0], [-1.8, 2.5, -1.6]], C.green).power = s => s.mg1ElectricalPowerKW;
-      route([], [[0.7, 2.6, -1.55], [-1.8, 2.5, -1.6]], C.green).power = s => s.batteryPowerKW;
-      route(['mg2'], [[-1.8, 2.5, -1.6], [2.5, 1.7, -0.8], [2.55, 0.75, 0]], C.green).power = s => s.mg2ElectricalPowerKW;
-      route(['mg2'], [[2.55, 0, 0], [5.45, 0, 0]], C.amber).power = s => s.mg2PowerKW;
+      const sunPort = [0.2, 0, 0.3], carrierPort = [0.2, 0.88, 0.3], ringPort = [0.2, 1.5, 0.3];
+      const mg1Port = [-1.67, 0, 0.3], mg2Port = [2.55, 0, 0.3], merger = [3.38, 0, 0.3];
+      const inverterPort = [-1.8, 2.5, -1.6];
+      powerTrace('ecvt-carrier', ['engine', 'carrier'], [[-5.3, 0, 0.3], [-0.35, 0, 0.3], carrierPort], C.blue, s => s.enginePowerKW);
+      powerTrace('ecvt-ring', ['carrier', 'planets', 'ring'], [carrierPort, ringPort, [1, 1.5, 0.3], merger], C.amber, s => s.enginePowerKW - s.mg1PowerKW);
+      powerTrace('mg1-shaft', ['planets', 'sun', 'mg1'], [carrierPort, sunPort, mg1Port], C.blue, s => s.mg1PowerKW);
+      powerTrace('mg1-electric', ['mg1', 'inverter'], [mg1Port, [-1.67, 0.8, 0.3], inverterPort], C.green, s => s.mg1ElectricalPowerKW);
+      powerTrace('battery-bus', ['battery', 'inverter'], [[0.7, 2.6, -1.55], inverterPort], C.green, s => s.batteryPowerKW);
+      powerTrace('mg2-electric', ['inverter', 'mg2'], [inverterPort, [2.55, 1.7, -0.8], mg2Port], C.green, s => s.mg2ElectricalPowerKW);
+      powerTrace('mg2-shaft', ['mg2', 'ring'], [mg2Port, merger], C.amber, s => s.mg2PowerKW);
+      powerTrace('ecvt-output', ['ring', 'output'], [merger, [5.45, 0, 0.3]], C.amber, s => s.outputPowerKW);
     } else {
       for (const [id, x, radius, color] of [['brake-sun', -0.95, 0.72, C.red], ['brake-ring', 1.1, 1.82, C.red], ['brake-carrier', 1.95, 1.1, C.purple]]) {
         const brake = new THREE.Group(); brake.add(annulus(radius + 0.055, radius - 0.055, 0.19, material(0x696f78, { surface: 'stationary planetary brake band' }), Math.PI * 0.12));
@@ -682,18 +830,30 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       }
       const lock = clutchPack(C.purple, 0.75, 5); addPart('lock-clutch', lock, [2.7, 0, 0], [1.4, 0.15, 0], [0, 1.05, 0], C.purple); rotate(lock, 'lock-clutch');
       simpleShaft('output', 4.18, 0, 0, 2.05, C.green, 'output', 0.2, [1.45, 0, 0], true);
-      const atPaths = {
-        '1': [[0.2, 0, 0], [0.2, 1.08, 0], [2.8, 0, 0]],
-        '2': [[-1.4, 1.65, 0], [0.2, 1.65, 0], [0.2, 1.08, 0], [2.8, 0, 0]],
-        '3': [[0.2, 0, 0], [2.8, 0, 0]],
-        '4': [[-1.1, 1.08, 0], [0.2, 1.08, 0], [0.2, 1.65, 0], [2.8, 0, 0]],
-        'R': [[0.2, 0, 0], [0.2, 1.08, 0], [0.2, 1.65, 0], [2.8, 0, 0]],
-      };
-      for (const [gearId, path] of Object.entries(atPaths)) {
-        const r = route([], [[-5.4, 0, 0], [-3.3, 0, 0], path[0]], C.blue);
-        r.condition = s => s.gear === gearId;
-        route([], [...path, [5.3, 0, 0]], C.amber).condition = s => s.gear === gearId;
+      const turbine = [-2.95, 0, 0.3], inlet = [-1.9, 0, 0.3], outlet = [2.8, 0, 0.3];
+      const interfaces = { sun: [0.2, 0.28, 0.3], carrier: [0.2, 1.08, 0.3], ring: [0.2, 1.56, 0.3] };
+      const clutchInlets = { sun: [-1.57, 0.28, 0.3], carrier: [-0.9, 1.08, 0.3], ring: [-1.1, 1.56, 0.3] };
+      const turbineKW = s => rpmPower(s.inputTorque, s.turbineRpm);
+      powerTrace('at-engine', ['engine', 'converter'], [[-5.2, 0, 0.3], [-3.65, 0, 0.3]], C.blue, s => s.inputPowerKW);
+      powerTrace('at-fluid', ['pump', 'turbine', 'stator'], [[-3.65, 0, 0.3], [-3.39, 0.76, 0.3], [-3.08, 0.77, 0.3], turbine], C.blue, s => s.converterLocked ? 0 : turbineKW(s));
+      powerTrace('at-converter-lock', ['converter', 'turbine'], [[-3.65, 0, 0.3], turbine], C.blue, s => s.converterLocked ? turbineKW(s) : 0);
+      powerTrace('at-turbine', ['turbine', 'input'], [turbine, inlet], C.blue, turbineKW);
+      for (const [port, entry] of Object.entries(interfaces)) {
+        powerTrace(`at-${port}-input`, ['input', 'shift-clutches', port], [inlet, clutchInlets[port], entry], C.blue, s => s.activePorts?.input === port ? turbineKW(s) : 0);
       }
+      const planet = [0.2, 0.87, 0.3];
+      for (const [inputPort, outputPort] of [['sun', 'carrier'], ['ring', 'carrier'], ['carrier', 'ring'], ['sun', 'ring']]) {
+        powerTrace(`at-${inputPort}-${outputPort}`, [inputPort, 'planets', outputPort], [interfaces[inputPort], planet, interfaces[outputPort]], C.amber,
+          s => s.heldElement && s.activePorts?.input === inputPort && s.activePorts?.output === outputPort ? turbineKW(s) : 0);
+      }
+      const lockPort = [2.7, 0.32, 0.3];
+      powerTrace('at-planetary-lock', ['sun', 'lock-clutch', 'carrier'], [interfaces.sun, lockPort, outlet], C.amber,
+        s => s.activePorts && !s.heldElement ? turbineKW(s) : 0);
+      powerTrace('at-carrier-output', ['carrier', 'output'], [interfaces.carrier, [1.4, 1.08, 0.3], outlet], C.amber,
+        s => s.heldElement && s.activePorts?.output === 'carrier' ? s.outputPowerKW : 0);
+      powerTrace('at-ring-output', ['ring', 'output'], [interfaces.ring, [1.6, 1.56, 0.3], outlet], C.amber,
+        s => s.activePorts?.output === 'ring' ? s.outputPowerKW : 0);
+      powerTrace('at-output', ['output'], [outlet, [5.2, 0, 0.3]], C.amber, s => s.outputPowerKW);
     }
   }
 
@@ -707,13 +867,18 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     }
     for (const sign of [-1, 1]) { const face = annulus(0.52, bore, 0.045, material(C.steel)); face.position.x = sign * 0.44; rotor.add(face); }
     group.add(rotor);
-    const core = annulus(1.0, 0.75, 0.91, material(0x4c545c, { surface: 'stationary laminated stator iron stack' }), Math.PI * 0.72); group.add(core);
+    const opening = Math.PI * 0.72;
+    const core = annulus(1.0, 0.75, 0.91, material(0x4c545c, { surface: 'stationary laminated stator iron stack' }), opening); group.add(core);
+    for (const x of [-0.32, -0.16, 0, 0.16, 0.32]) {
+      const seam = annulus(1.008, 0.988, 0.018, material(0x292e34, { roughness: 0.54, surface: 'stator lamination pack seam' }), opening);
+      seam.position.x = x; group.add(seam);
+    }
     const copper = material(0xae713d, { physicalColor: true, metalness: 0.96, roughness: 0.27, bumpScale: 0.001, surface: 'stationary copper stator winding' });
     for (let i = 0; i < 24; i += 1) {
       const a = i * TAU / 24;
       // Remove the front stator sector as an actual cutaway, revealing the
       // separate rotor and stationary laminated teeth.
-      if (Math.sin(a) > 0.5) continue;
+      if (Math.sin(a) > Math.cos(opening * 0.5)) continue;
       const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.2, 0.086), material(0x626c75, { surface: 'stationary stator pole tooth' }));
       tooth.position.set(0, Math.cos(a) * 0.655, Math.sin(a) * 0.655); tooth.rotation.x = a; group.add(tooth);
       for (let turn = 0; turn < 4; turn += 1) {
@@ -724,13 +889,14 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       }
     }
     for (const sign of [-1, 1]) {
-      const face = annulus(1.02, 0.78, 0.055, material(C.steel, { surface: 'motor stator end support' }), Math.PI * 0.72); face.position.x = sign * 0.49; group.add(face);
-      for (let j = 0; j < 12; j += 1) { const a = j * TAU / 12; if (Math.sin(a) > 0.5) continue; const bolt = cylinder(0.033, 0.12, material(C.steel), 6); bolt.position.set(sign * 0.54, Math.cos(a) * 0.91, Math.sin(a) * 0.91); group.add(bolt); }
+      const face = annulus(1.02, 0.78, 0.055, material(C.steel, { surface: 'motor stator end support' }), opening); face.position.x = sign * 0.49; group.add(face);
+      for (let j = 0; j < 12; j += 1) { const a = j * TAU / 12; if (Math.sin(a) > Math.cos(opening * 0.5)) continue; const bolt = cylinder(0.033, 0.12, material(C.steel), 6); bolt.position.set(sign * 0.54, Math.cos(a) * 0.91, Math.sin(a) * 0.91); group.add(bolt); }
     }
     addPart(id, group, [x, 0, 0], [x < 0 ? -0.7 : 0.9, 0.5, 0], [0, 1.25, -0.2], color); rotate(rotor, key);
   }
 
   function freezeMechanicalAnchors() {
+    assembly.traverse(object => { if (object.userData.fixedCut) stationaryCuts.push(object); });
     assembly.updateWorldMatrix(true, true);
     for (const p of parts.values()) {
       let representative = null, radius = -1;
@@ -752,7 +918,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       assembly.traverse(o => { if (o.geometry) geometries.add(o.geometry); if (o.material) for (const m of Array.isArray(o.material) ? o.material : [o.material]) materials.add(m); });
       return { geometries, materials };
     };
-    const before = resources(), protectedMeshes = new Set([...rotors.map(r => r.object), ...beltSegments, ...preselectionMarkers.map(m => m.mesh)]);
+    const before = resources(), protectedMeshes = new Set([...rotors.map(r => r.object), ...preselectionMarkers.map(m => m.mesh)]);
     for (const p of parts.values()) p.group.traverse(o => { for (const layer of o.userData.stackLayers || []) protectedMeshes.add(layer.mesh); if (o.userData.drivenHub) protectedMeshes.add(o.userData.drivenHub); });
     for (const p of pulleyParts || []) { for (const sheave of p.sheaves) protectedMeshes.add(sheave); protectedMeshes.add(p.contactRing); }
     const geometryKeys = new WeakMap();
@@ -770,7 +936,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       if (a.index) { if (a.index.count !== b.index.count) return false; for (let i = 0; i < a.index.count; i += 1) if (a.index.array[i] !== b.index.array[i]) return false; }
       return true;
     };
-    const materialKey = mat => JSON.stringify([mat.type, mat.color?.getHex(), mat.emissive?.getHex(), mat.emissiveIntensity, mat.metalness, mat.roughness, mat.transparent, mat.opacity, mat.side, mat.depthWrite, mat.depthTest, mat.blending, mat.vertexColors, mat.flatShading, mat.bumpMap?.uuid, mat.bumpScale, mat.map?.uuid, mat.normalMap?.uuid, mat.normalScale?.toArray(), mat.userData.surface]);
+    const materialKey = mat => JSON.stringify([mat.type, mat.color?.getHex(), mat.emissive?.getHex(), mat.emissiveIntensity, mat.metalness, mat.roughness, mat.roughnessMap?.uuid, mat.clearcoat, mat.clearcoatRoughness, mat.clearcoatRoughnessMap?.uuid, mat.transparent, mat.opacity, mat.side, mat.depthWrite, mat.depthTest, mat.blending, mat.vertexColors, mat.flatShading, mat.bumpMap?.uuid, mat.bumpScale, mat.map?.uuid, mat.normalMap?.uuid, mat.normalScale?.toArray(), mat.userData.surface]);
     let originalMeshes = 0, instancedMeshes = 0, instancedCopies = 0;
     assembly.traverse(o => { if (o.isMesh) originalMeshes += 1; });
     for (const p of parts.values()) {
@@ -831,7 +997,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     const geometries = new Set(), materials = new Set();
     assembly.traverse(o => { if (o.geometry) geometries.add(o.geometry); if (o.material) for (const m of (Array.isArray(o.material) ? o.material : [o.material])) materials.add(m); });
     for (const g of geometries) g.dispose(); for (const m of materials) m.dispose();
-    assembly.clear(); leaderLayer.replaceChildren(); labelsLayer.replaceChildren(leaderLayer); parts = new Map(); rotors = []; selectable = []; flowRoutes = []; particleMeshes = []; beltSegments = []; pulleyParts = null; preselectionMarkers = []; selectorForks = []; gearboxHousing = null; ownedMaterials.clear(); beltTravel = 0;
+    assembly.clear(); leaderLayer.replaceChildren(); labelsLayer.replaceChildren(leaderLayer); parts = new Map(); rotors = []; selectable = []; oilRoutes = []; powerTraces = []; beltTrace = null; beltInstances = null; stationaryCuts = []; converterLockPiston = null; sumpWall = null; beltSegments = []; pulleyParts = null; preselectionMarkers = []; selectorForks = []; gearboxHousing = null; ownedMaterials.clear(); beltTravel = 0;
   }
 
   function setType(nextType, preserveCamera = false) {
@@ -906,7 +1072,8 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     const center = type === 'mt' || type === 'dct' ? point(0, -0.35, 0) : point(0, 0.25, 0);
     const aspect = width / height;
     const distance = aspect < 1.1 ? 19 : aspect > 2 ? 12.6 : 15.5;
-    const positions = { isometric: point(0.57, 0.38, 0.79), front: point(0.04, 0.02, 1), top: point(0.01, 1, 0.08) };
+    const isometric = type === 'cvt' ? point(0.39, 0.58, 0.75) : point(0.32, 0.32, 0.9);
+    const positions = { isometric, front: point(0.04, 0.02, 1), top: point(0.01, 1, 0.08) };
     camera.position.copy(positions[preset] || positions.isometric).normalize().multiplyScalar(distance).add(center);
     controls.target.copy(center); controls.update(); fitCamera();
   }
@@ -923,6 +1090,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     const add2 = (z, y) => points.push(point(0, y, z));
     const upper1 = [c1 + primary * Math.cos(a1), primary * Math.sin(a1)];
     const upper2 = [c2 + secondary * Math.cos(a1), secondary * Math.sin(a1)];
+    beltTrace?.setPoints([[c1, 0, 0.15], [...upper1, 0.15], [...upper2, 0.15], [c2, 0, 0.15]]);
     const lower1 = [upper1[0], -upper1[1]], lower2 = [upper2[0], -upper2[1]];
     const lines = 40, arcs = 34;
     for (let i = 0; i < lines; i += 1) { const t = i / lines; add2(upper1[0] + (upper2[0] - upper1[0]) * t, upper1[1] + (upper2[1] - upper1[1]) * t); }
@@ -941,7 +1109,16 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     beltSegments.forEach((segment, i) => {
       const t = i / beltSegments.length + beltTravel, p = at(t), tangent = at(t + 0.001).sub(at(t - 0.001)).normalize();
       segment.position.copy(p); segment.rotation.x = -Math.atan2(tangent.y, tangent.z);
+      segment.updateMatrix();
+      beltInstances.setMatrixAt(i, segment.matrix);
     });
+    beltInstances.instanceMatrix.needsUpdate = true;
+    const layout = `${primary}:${secondary}:${explode}`;
+    if (layout !== beltInstances.userData.layout) {
+      beltInstances.computeBoundingBox();
+      beltInstances.computeBoundingSphere();
+      beltInstances.userData.layout = layout;
+    }
     for (let i = 0; i < pulleyParts.length; i += 1) {
       const radius = i ? secondary : primary;
       // Opposing cone surfaces contact the ±.125 belt edges at the exact
@@ -1036,14 +1213,17 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     for (const p of parts.values()) p.group.position.copy(p.base).addScaledVector(p.explode, explode);
     if (focusedPart && view[parts.get(focusedPart)?.category] === false) focusedPart = null;
     syncPartVisibility(view);
+    updateBelt(snapshot, dt, speed, explode);
     const categories = [...['bearings', 'clutches', 'lubrication'].map(c => view[c] !== false), gearboxHousing?.group.visible ?? false, view.housingMode || 'cutaway'].join('/');
     if (Math.abs(explode - lastFitExplode) > 0.0005 || categories !== lastCategories) { fitCamera(); lastFitExplode = explode; lastCategories = categories; }
     const active = new Set(snapshot.activeParts || []), preselected = new Set(snapshot.preselectedParts || []); if (view.selectedPart !== undefined) selected = view.selectedPart;
+    const closedOpaque = view.housingMode === 'closed' && housingAmount > 0.8;
+    if (sumpWall) sumpWall.visible = closedOpaque;
     for (const marker of preselectionMarkers) marker.mesh.visible = preselected.has(marker.id) && !active.has(marker.id);
     for (const fork of selectorForks) {
       const selectedGears = fork.dual ? [snapshot.selectedA, snapshot.selectedB] : [snapshot.gear];
       const selectedIndex = fork.gears.findIndex(gearId => selectedGears.includes(gearId));
-      const offset = selectedIndex < 0 ? 0 : fork.dual ? fork.direction * 0.10 : selectedIndex === 0 ? -0.14 : 0.14;
+      const offset = selectedIndex < 0 ? 0 : fork.travel[selectedIndex];
       fork.group.position.x = THREE.MathUtils.lerp(fork.group.position.x, fork.base + offset, dt > 0 ? 1 - Math.exp(-dt * 16) : 1);
     }
     for (const rotor of rotors) {
@@ -1052,6 +1232,9 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       if (rotor.subtract) rpm -= snapshot.partRpm?.[rotor.subtract] || 0;
       rotor.object.rotation[rotor.axis] = (rotor.object.rotation[rotor.axis] + rpm * TAU / 60 * dt * speed * rotor.multiplier) % TAU;
     }
+    // The virtual saw plane stays fixed while the discs, hubs and vanes spin.
+    for (const section of stationaryCuts) section.rotation.x = -section.parent.rotation.x;
+    if (converterLockPiston) converterLockPiston.position.x = snapshot.converterLocked ? -0.61 : -0.53;
     const ballMatrix = new THREE.Matrix4();
     for (const bearing of bearingDetails) {
       bearing.ballAngle = (bearing.ballAngle + (snapshot.partRpm?.[bearing.key] || 0) * bearing.ratios.ballRelativeInner * TAU / 60 * dt * speed) % TAU;
@@ -1083,8 +1266,7 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       p.leaderShadow.style.display = 'none';
       const focus = view.focusCategory || 'all';
       const exterior = ['housing', 'engine', 'input', 'output', 'cooler', 'inverter', 'battery'].includes(id);
-      const closedOpaque = view.housingMode === 'closed' && housingAmount > 0.8;
-      if (id === 'oil-lines') for (const object of p.group.children) if (object.isMesh && !flowRoutes.some(r => r.line === object)) object.visible = !closedOpaque;
+      if (id === 'oil-lines') for (const object of p.group.children) if (object.isMesh && !oilRoutes.some(r => r.line === object)) object.visible = !closedOpaque;
       const showAnnotation = isSelected || ((!closedOpaque || exterior) && (focus === 'all' ? p.label : p.category === focus));
       if (view.labels !== false && showAnnotation && p.group.visible) {
         // Anchors live in the fixed assembly frame. The component's own spin
@@ -1100,7 +1282,6 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
       }
     }
     layoutLabels(labelCandidates);
-    updateBelt(snapshot, dt, speed, explode);
     const releaseFraction = clamp(snapshot.releaseBearing?.releaseFraction ?? 0, 0, 1);
     if (type === 'mt') {
       const release = parts.get('release-bearing'), pressure = parts.get('pressure-plate'), fork = parts.get('release-fork');
@@ -1115,13 +1296,16 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
     }
     const selectedGroup = parts.get(selected)?.group;
     selectionOutline.visible = Boolean(selectedGroup?.visible) && !focusedPart; if (selectionOutline.visible) { selectionOutline.box.setFromObject(selectedGroup); selectionOutline.updateMatrixWorld(true); }
-    for (const r of flowRoutes) {
-      const routePower = r.oil ? 1 : r.power ? r.power(snapshot) : snapshot.outputPowerKW;
-      const oilRunning = type === 'mt' ? Math.max(Math.abs(snapshot.partRpm?.['input-shaft'] || 0), Math.abs(snapshot.partRpm?.['output-shaft'] || 0)) > 1 : type === 'ecvt' ? Math.max(Math.abs(snapshot.sunRpm || 0), Math.abs(snapshot.ringRpm || 0), Math.abs(snapshot.carrierRpm || 0)) > 1 : Math.abs(snapshot.inputRpm || 0) > 1;
-      const enabled = !focusedPart && explode < 0.4 && (r.oil ? !(view.housingMode === 'closed' && housingAmount > 0.8) && view.lubrication !== false && view.oilFlow !== false && oilRunning : view.flow !== false && (!r.condition || r.condition(snapshot)) && r.ids.every(id => active.has(id)) && Number.isFinite(routePower) && Math.abs(routePower) > 0.01);
-      r.line.visible = enabled;
-      r.progress = (r.progress + dt * (0.24 + Math.abs(snapshot.inputRpm || 0) / 5500) * 0.6 * Math.sign(routePower || 1) + 1) % 1;
-      r.beads.forEach((bead, i) => { bead.visible = enabled; if (enabled) bead.position.copy(r.curve.getPointAt((r.progress + i / r.beads.length) % 1)); });
+    const assembledCutaway = !focusedPart && !closedOpaque && explode < 0.4;
+    for (const trace of powerTraces) {
+      trace.update(snapshot, assembledCutaway && view.flow !== false && trace.ports.every(id => parts.get(id)?.group.visible), dt, speed);
+    }
+    const oilRunning = type === 'mt' ? Math.max(Math.abs(snapshot.partRpm?.['input-shaft'] || 0), Math.abs(snapshot.partRpm?.['output-shaft'] || 0)) > 1 : type === 'ecvt' ? Math.max(Math.abs(snapshot.sunRpm || 0), Math.abs(snapshot.ringRpm || 0), Math.abs(snapshot.carrierRpm || 0)) > 1 : Math.abs(snapshot.inputRpm || 0) > 1;
+    const showOil = assembledCutaway && view.lubrication !== false && view.oilFlow !== false && oilRunning;
+    for (const r of oilRoutes) {
+      r.line.visible = showOil;
+      r.progress = (r.progress + dt * (0.24 + Math.abs(snapshot.inputRpm || 0) / 5500) * 0.6) % 1;
+      r.beads.forEach((bead, i) => { bead.visible = showOil; if (showOil) bead.position.copy(r.curve.getPointAt((r.progress + i / r.beads.length) % 1)); });
     }
     const renderStarted = performance.now(); renderer.render(scene, camera); lastRenderMs = performance.now() - renderStarted; renderFrames += 1;
     renderInvalidated = false; lastRenderedSnapshot = snapshot; lastRenderedViewKey = viewKey;
@@ -1167,7 +1351,8 @@ export function createTransmissionScene(container, { onSelectPart = () => {} } =
         bearings: bearingDiagnostics(),
         labelPositions: entries.filter(p => p.labelElement.style.display !== 'none').map(p => ({ id: p.id, x: Number.parseFloat(p.labelElement.style.left), y: Number.parseFloat(p.labelElement.style.top) })),
         materialProperties: entries.map(p => ({ id: p.id, category: p.category, surfaces: [...new Set(p.materials.map(m => m.userData.surface))], materials: [...new Set(p.materials)].slice(0, 4).map(m => ({ surface: m.userData.surface, color: `#${m.color.getHexString()}`, metalness: m.metalness, roughness: m.roughness, bumpScale: m.bumpScale, emissiveIntensity: m.emissiveIntensity })) })),
-        oilPaths: flowRoutes.filter(r => r.oil).map(r => ({ visible: r.line.visible, animatedDrops: r.beads.filter(b => b.visible).length, color: `#${r.line.material.color.getHexString()}`, phase: r.progress, firstDrop: r.beads[0]?.position.toArray() })),
+        oilPaths: oilRoutes.map(r => ({ visible: r.line.visible, animatedDrops: r.beads.filter(b => b.visible).length, color: `#${r.line.material.color.getHexString()}`, phase: r.progress, firstDrop: r.beads[0]?.position.toArray() })),
+        powerPaths: powerTraces.map(trace => trace.diagnostics()),
         requestedQuality, effectiveQuality, performance: { frameMs, renderMs: lastRenderMs, renderFrames, skippedIdleFrames, triangles: renderer.info.render.triangles, drawCalls: renderer.info.render.calls, geometries: renderer.info.memory.geometries, visibleLabels: labelLayout.visible.length, suppressedLabels: labelLayout.suppressed.length, labelOverlaps: labelLayout.overlaps, ...batchStats },
         annotations: labelLayout.visible.map(label => ({ ...label })), suppressedLabels: [...labelLayout.suppressed], contextLost,
         meshCount, visibleLabels: entries.filter(p => p.labelElement.style.display !== 'none').length, rotors: rotors.length, rotorAngles: rotors.map(r => ({ key: r.key, axis: r.axis, angle: r.object.rotation[r.axis] })), cameraDistance: camera.position.distanceTo(controls.target), beltSegments: beltSegments.length, beltPhase: beltTravel, beltSamplePositions: beltSegments.filter((_,i)=>i===0||i===71).map(o=>o.position.toArray()), width, height, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries, snapshotType: currentSnapshot?.type || null, renderer: renderer.capabilities.isWebGL2 ? 'WebGL 2' : 'WebGL' };

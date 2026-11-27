@@ -1,3 +1,5 @@
+export { renderConditionFeedback } from './condition-feedback.js';
+
 /** Selection-dependent observations, all derived from the current model snapshot. */
 export function componentReadouts(snapshot, partId, bearing = null) {
   const d = snapshot.detail;

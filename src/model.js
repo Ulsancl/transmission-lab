@@ -1,4 +1,6 @@
 /** Controlled-speed transmission anatomy experiments. See docs/model.md. */
+import { EXPERIMENT_TIMING } from './experiment-timing.js';
+
 const TAU = Math.PI * 2;
 const rpmPower = (torque, rpm) => torque * rpm * TAU / 60000;
 const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
@@ -142,7 +144,8 @@ for (const [type, definition] of Object.entries(TRANSMISSIONS)) {
 
 export function defaultSettings(type = 'dct') {
   type = Object.hasOwn(TRANSMISSIONS, type) ? type : 'dct';
-  return { type, rpm: 1800, torque: 140, gear: type === 'cvt' || type === 'ecvt' ? 'D' : '1', clutch: 1, cvtRatio: 1.5, converterLock: false, converterSlip: 0.12, mg1Rpm: 2000, mg2Torque: 40, efficiency: 0.96 };
+  const timing = EXPERIMENT_TIMING[type];
+  return { type, rpm: 1800, torque: 140, gear: type === 'cvt' || type === 'ecvt' ? 'D' : '1', clutch: 1, cvtRatio: 1.5, converterLock: false, converterSlip: 0.12, mg1Rpm: 2000, mg2Torque: 40, efficiency: 0.96, [timing.key]: timing.initial };
 }
 
 export function normalizeSettings(value = {}) {
@@ -150,11 +153,14 @@ export function normalizeSettings(value = {}) {
   const type = Object.hasOwn(TRANSMISSIONS, source.type) ? source.type : 'dct';
   const defaults = defaultSettings(type);
   const normalized = { ...defaults };
-  const bounds = { rpm: [0, 7000], torque: [0, 400], clutch: [0, 1], cvtRatio: [0.45, 2.8], converterSlip: [0, 0.85], mg1Rpm: [-10000, 10000], mg2Torque: [-200, 200], efficiency: [0.7, 1] };
+  const timing = EXPERIMENT_TIMING[type];
+  const bounds = { rpm: [0, 7000], torque: [0, 400], clutch: [0, 1], cvtRatio: [0.45, 2.8], converterSlip: [0, 0.85], mg1Rpm: [-10000, 10000], mg2Torque: [-200, 200], efficiency: [0.7, 1], [timing.key]: [timing.min, timing.max] };
   for (const [key, range] of Object.entries(bounds)) {
     const parsed = typeof source[key] === 'string' && source[key].trim() ? Number(source[key]) : source[key];
     if (typeof parsed === 'number' && Number.isFinite(parsed)) normalized[key] = clamp(parsed, ...range);
   }
+  const timingSteps = Math.round((normalized[timing.key] - timing.min) / timing.step);
+  normalized[timing.key] = Number((timing.min + timingSteps * timing.step).toFixed(timing.digits));
   const gear = String(source.gear ?? defaults.gear);
   if (TRANSMISSIONS[type].gears.some(item => item.id === gear)) normalized.gear = gear;
   normalized.converterLock = source.converterLock === true;
@@ -552,7 +558,7 @@ export function createSimulator(initialSettings = {}) {
       else if (old.type === 'dct' && old.gear !== settings.gear) {
         // Crossing neutral/reverse is an immediate disengage/reselect, not an overlapping direction reversal.
         const forward = id => /^[1-6]$/.test(id);
-        transition = forward(old.gear) && forward(settings.gear) ? { from: transition?.to ?? old.gear, to: settings.gear, elapsed: 0, duration: 0.85 } : null;
+        transition = forward(old.gear) && forward(settings.gear) ? { from: transition?.to ?? old.gear, to: settings.gear, elapsed: 0, duration: settings.dctShiftSeconds } : null;
       }
       return evaluate();
     },

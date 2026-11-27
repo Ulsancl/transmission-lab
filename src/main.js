@@ -1,11 +1,13 @@
 import './style.css';
+import './experiment-controls.css';
 import { TRANSMISSIONS, defaultSettings, normalizeSettings, createSimulator } from './model.js';
 import { createTransmissionScene } from './scene.js';
 import packageInfo from '../package.json';
 import { captureComparison, createProject, readProject, csvCell, COMPARISON_LIMIT } from './project.js';
 import { advanceClock } from './clock.js';
 import { createProjectStorage } from './storage.js';
-import { componentReadouts } from './detail-readouts.js';
+import { EXPERIMENT_TIMING, createExperimentPlan } from './experiment-timing.js';
+import * as detailReadouts from './detail-readouts.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -70,7 +72,7 @@ $('#app').innerHTML=`
       </div>
       <div class="control-section"><div class="section-title"><span id="gear-heading">기어 선택</span><small id="gear-state">SELECT</small></div><div id="gear-selector" class="gear-selector" role="group" aria-label="기어 선택"></div><p id="gear-hint" class="control-hint"></p></div>
       <div id="type-controls" class="control-section"></div>
-      <div class="experiment-box"><span class="eyebrow">TRY AN EXPERIMENT</span><button id="experiment" class="experiment-button">${icon('arrows')}<span>변속 실험</span><b>↗</b></button><p id="experiment-hint">조건을 바꾸며 부품의 움직임을 살펴보세요.</p></div>
+      <div class="experiment-box"><span class="eyebrow">TRY AN EXPERIMENT</span><button id="experiment" class="experiment-button">${icon('arrows')}<span>변속 실험</span><b>↗</b></button><p id="experiment-hint">조건을 바꾸며 부품의 움직임을 살펴보세요.</p><div id="experiment-timing" class="experiment-timing"></div></div>
       <div class="control-section view-controls"><div class="section-title"><span>해부 모드</span><small>DISSECTION</small></div>
         <label class="range-control compact" for="explode"><span>부품 벌리기</span><span class="value"><output id="explode-value">6</output><small>%</small></span><input id="explode" data-view="explode" type="range" min="0" max="1" step="0.01"></label>
         <div class="housing-view"><span class="view-group-label">케이스 관찰</span><div class="housing-modes" aria-label="케이스 관찰 방식"><button data-housing-mode="cutaway" aria-pressed="true">절개</button><button data-housing-mode="closed" aria-pressed="false">외형</button><button data-housing-mode="hidden" aria-pressed="false">내부만</button></div></div>
@@ -132,6 +134,8 @@ function renderControls() {
   $('#type-controls').innerHTML=html;
   $('#experiment span').textContent=m.experiment;
   $('#experiment-hint').textContent='자동으로 조건을 바꿉니다. 중간에 조절하면 실험이 멈춥니다.';
+  const { key, label, min, max, step, hint } = EXPERIMENT_TIMING[type];
+  $('#experiment-timing').innerHTML=`<label class="range-control" for="${key}"><span id="experiment-timing-label">${label}</span><span class="value"><output id="experiment-timing-value" for="${key}"></output><small>초</small></span><input id="${key}" data-setting="${key}" type="range" min="${min}" max="${max}" step="${step}" aria-labelledby="experiment-timing-label" aria-describedby="experiment-timing-hint"></label><p id="experiment-timing-hint" class="control-hint">${hint}</p>`;
   $('#electric-legend').hidden=type!=='ecvt';
   $('#equation').textContent=type==='ecvt'||type==='at'?'(Nₛ + Nᵣ) × ω꜀ = Nₛ × ωₛ + Nᵣ × ωᵣ':type==='cvt'?'ω입력 × r입력 = ω출력 × r출력':'기어비 = 출력 기어 잇수 / 입력 기어 잇수';
   $('#equation-hint').textContent=type==='ecvt'||type==='at'?'N: 잇수 · ω: 회전수 · s: 태양 · r: 링 · c: 캐리어':type==='cvt'?'벨트 미끄럼이 없는 상태 · r: 접촉 반지름':'단순 기어 쌍 기준 · 외접 기어의 회전 방향은 반대';
@@ -149,6 +153,12 @@ function syncInputs() {
 function updateInputLabels() {
   document.querySelectorAll('[data-view="explode"]').forEach(el=>el.value=view.explode);
   for(const key of ['rpm','torque','clutch','cvtRatio','converterSlip','mg1Rpm','mg2Torque']) {const el=$(`#${key}-value`);if(el)el.textContent=fmt(simulator.settings[key]*(['clutch','converterSlip'].includes(key)?100:1),key==='cvtRatio'?2:0);}
+  const timing = EXPERIMENT_TIMING[type], timingValue = fmt(simulator.settings[timing.key], timing.digits);
+  const timingOutput = $('#experiment-timing-value');
+  if (timingOutput.textContent !== timingValue) {
+    timingOutput.textContent = timingValue;
+    $(`#${timing.key}`).setAttribute('aria-valuetext', `${timingValue}초`);
+  }
   for(const key of ['explode','housing','cutaway'])$(`#${key}-value`).textContent=fmt(view[key]*100);
   document.querySelectorAll('[data-housing-mode]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.housingMode===view.housingMode)));
   $('#cutaway').disabled=view.housingMode!=='cutaway';$('#housing').disabled=view.housingMode==='hidden';
@@ -191,6 +201,7 @@ function renderInspector() {
 }
 function updateUI() {
   updateComponentDetails();
+  detailReadouts.renderConditionFeedback?.(snapshot, simulator.settings);
   $('#metric-input').textContent=fmt(snapshot.inputRpm);
   $('#metric-output').textContent=fmt(snapshot.outputRpm);
   $('#metric-ratio').textContent=Math.abs(snapshot.ratio)>0.001?fmt(snapshot.ratio,2):'—';
@@ -225,22 +236,18 @@ function updateComponentDetails() {
   const target = $('#component-details'); if (!target) return;
   const id = $('#part-rpm')?.dataset.part || selectedPart || 'engine';
   const bearing = id === 'bearings' ? scene?.getBearingDiagnostics()[0] : null;
-  const detail = componentReadouts(snapshot, id, bearing);
+  const detail = detailReadouts.componentReadouts(snapshot, id, bearing);
   const html = `<h4>작동 상세</h4><dl>${detail.rows.map(row => `<div><dt>${esc(row.label)}</dt><dd>${fmt(row.value,row.digits)} <small>${esc(row.unit)}</small></dd></div>`).join('')}</dl><p>${esc(detail.note)}</p>`;
   if (target.innerHTML !== html) target.innerHTML = html;
 }
 function reset(){sequence=null;simulator.reset();snapshot=simulator.snapshot();trace=[];lastSample=-1;updateUI();drawChart();}
 function startExperiment(){
   const original=simulator.settings;reset();
-  const initial=({dct:{gear:'1',clutch:1},mt:{gear:'1',clutch:0},cvt:{gear:'D',cvtRatio:2.6},at:{gear:'1',converterLock:false},ecvt:{gear:'D',mg1Rpm:4000}})[type];
-  simulator=createSimulator({...original,...initial});snapshot=simulator.snapshot();togglePause(false);
-  if(type==='dct'){setSettings({gear:'1',clutch:1},true);sequence={start:0,duration:7,steps:[{at:2,settings:{gear:'2'}},{at:4.5,settings:{gear:'3'}}],index:0};}
-  if(type==='mt'){setSettings({gear:'1',clutch:0},true);sequence={start:0,duration:5,continuous:t=>({clutch:Math.min(1,t/3)})};}
-  if(type==='cvt'){setSettings({gear:'D',cvtRatio:2.6},true);sequence={start:0,duration:8,continuous:t=>({cvtRatio:2.6-2.15*Math.min(1,t/6)})};}
-  if(type==='at'){setSettings({gear:'1',converterLock:false},true);sequence={start:0,duration:9,steps:[{at:2,settings:{gear:'2'}},{at:4,settings:{gear:'3'}},{at:6,settings:{gear:'4'}},{at:7,settings:{converterLock:true}}],index:0};}
-  if(type==='ecvt'){setSettings({mg1Rpm:4000},true);sequence={start:0,duration:8,continuous:t=>({mg1Rpm:4000-5000*Math.min(1,t/6)})};}
+  const { initial, ...plan } = createExperimentPlan(original);
+  simulator=createSimulator({...original,...initial});snapshot=simulator.snapshot();
+  sequence={...plan,start:0,index:0};
   sequence.before=captureComparison(simulator.settings,snapshot,`${META[type].tag} 실험 전`,packageInfo.version);
-  latestExperiment=null;renderExperimentResult();syncInputs();toast(`${META[type].experiment}을 시작했습니다. 현재 엔진 입력으로 진행합니다.`);
+  latestExperiment=null;renderExperimentResult();syncInputs();togglePause(false);persist();toast(`${META[type].experiment}을 시작했습니다. 현재 엔진 입력으로 진행합니다.`);
 }
 function runSequence(){
   if(!sequence)return;const t=snapshot.time-sequence.start;
@@ -266,8 +273,10 @@ function advance(seconds){
 function renderExperimentResult(){
   const el=$('#experiment-result');el.hidden=!latestExperiment||latestExperiment.after.type!==type;$('#show-result').hidden=el.hidden;if(el.hidden)return;
   const {before,after,duration}=latestExperiment;
+  const timing = EXPERIMENT_TIMING[type];
+  const timingSummary = `${timing.label} ${fmt(before.settings[timing.key], timing.digits)}초`;
   const explanation=({mt:'클러치를 연결하면서 출력축에 동력이 전달됩니다.',dct:'1단에서 3단으로 이동하며 홀수·짝수 클러치가 교대로 연결됩니다.',cvt:'입력 풀리의 유효 반지름이 커지면서 출력 회전수가 달라집니다.',at:'유성기어 연결을 바꾸고 록업을 연결한 뒤의 결과입니다.',ecvt:'MG1 회전수를 바꾼 전후의 기계·전기 동력 분배입니다.'})[type];
-  el.innerHTML=`<div class="result-heading"><span class="eyebrow">최근 자동 실험 · ${META[type].tag} · ${fmt(duration,1)}초</span><button id="save-experiment-comparison" class="subtle-button">전후 비교에 추가</button></div><p>${before.snapshot.inputRpm===0?'엔진이 정지한 조건입니다. 회전수 입력을 높여 다시 실험하면 동력 전달을 관찰할 수 있습니다.':explanation}</p><div class="experiment-values">${[['출력 회전수','outputRpm','rpm',0],['출력 토크','outputTorque','N·m',1],['기어비','ratio',':1',2]].map(([label,key,unit,d])=>`<span>${label}<b>${fmt(before.snapshot[key],d)} → ${fmt(after.snapshot[key],d)} <small>${unit}</small></b></span>`).join('')}</div><small>전·후 입력 회전수 ${fmt(before.snapshot.inputRpm)} / ${fmt(after.snapshot.inputRpm)} rpm · 최근 자동 실험 1건을 보관합니다.</small>`;
+  el.innerHTML=`<div class="result-heading"><span class="eyebrow">최근 자동 실험 · ${META[type].tag} · ${fmt(duration,1)}초</span><button id="save-experiment-comparison" class="subtle-button">전후 비교에 추가</button></div><p>${before.snapshot.inputRpm===0?'엔진이 정지한 조건입니다. 회전수 입력을 높여 다시 실험하면 동력 전달을 관찰할 수 있습니다.':explanation}</p><div class="experiment-values">${[['출력 회전수','outputRpm','rpm',0],['출력 토크','outputTorque','N·m',1],['기어비','ratio',':1',2]].map(([label,key,unit,d])=>`<span>${label}<b>${fmt(before.snapshot[key],d)} → ${fmt(after.snapshot[key],d)} <small>${unit}</small></b></span>`).join('')}</div><small>${timingSummary} · 전·후 입력 회전수 ${fmt(before.snapshot.inputRpm)} / ${fmt(after.snapshot.inputRpm)} rpm · 최근 자동 실험 1건을 보관합니다.</small>`;
   $('#save-experiment-comparison').onclick=()=>{if(comparisons.length+2>COMPARISON_LIMIT){toast('비교 공간이 부족합니다. 비교표에서 기존 결과를 삭제해 주세요.');showComparisons();return;}comparisons.push(structuredClone(before),structuredClone(after));persist();showComparisons();};
 }
 
