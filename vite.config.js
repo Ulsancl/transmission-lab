@@ -1,13 +1,15 @@
-import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+import { defineConfig, normalizePath } from 'vite';
 
 const policy = "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'";
-const generated = ['**/.security-stage-*/**', '**/.security-write-*/**', '**/output/**', '**/release/**', '**/dist/**'];
+const root = normalizePath(fileURLToPath(new URL('.', import.meta.url)));
+const generated = ['.security-stage-*', '.security-write-*', 'output', 'release', 'dist'];
 
 export default defineConfig(({ command, isPreview }) => ({
   define: { __TRANSMISSION_TEST_HOOKS__: command === 'serve' && !isPreview },
   server: {
-    watch: { ignored: [...generated, '**/.security-stage-*'] },
-    fs: { deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', ...generated] },
+    watch: { ignored: generated.flatMap(directory => [root + directory, root + directory + '/**']) },
+    fs: { deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', ...generated.map(directory => root + directory + '/**')] },
   },
   plugins: [{
     name: 'production-content-security-policy',
